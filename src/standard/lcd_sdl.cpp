@@ -193,9 +193,13 @@ bool LCD_SDL_Backend::Start(lcd_t& lcd)
 
     title += RomsetName(m_lcd->mcu->romset);
 
+    std::filesystem::path base_path = common::GetProcessPath().parent_path();
+
+    if (std::filesystem::exists(base_path / "../share/nuked-sc55"))
+        base_path = base_path / "../share/nuked-sc55";
+
     if (m_lcd->mcu->romset == Romset::MK1 || m_lcd->mcu->romset == Romset::MK2)
     {
-        std::filesystem::path base_path = common::GetProcessPath().parent_path();
         m_image = SDL_LoadBMP((const char*)(base_path / "sc55_background.bmp").u8string().c_str());
         if (m_image)
         {
@@ -206,7 +210,6 @@ bool LCD_SDL_Backend::Start(lcd_t& lcd)
     }
     else if (m_lcd->mcu->romset == Romset::JV880)
     {
-        std::filesystem::path base_path = common::GetProcessPath().parent_path();
         m_image = SDL_LoadBMP((const char*)(base_path / "jv880_background.bmp").u8string().c_str());
         if (m_image)
         {
