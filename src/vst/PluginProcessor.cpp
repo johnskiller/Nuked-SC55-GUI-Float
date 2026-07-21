@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include "backend/pcm.h"
+
 #include <JuceHeader.h>
 #include <filesystem>
 #include <dlfcn.h>
@@ -267,10 +269,13 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     midiMessages.clear();
 
     //--------------------------------------------------------------------------
-    // Sample rate conversion: emulator runs at fixed 44.1kHz, DAW may differ
+    // Sample rate conversion: emulator native rate → DAW project rate
+    // (same source as the SDL frontend: PCM_GetOutputFrequency)
     //--------------------------------------------------------------------------
-    const double speedRatio = 44100.0 / mCurrentSampleRate;
-    const int inputNeeded = static_cast<int>(std::ceil(numSamples * speedRatio)) + 4;
+    const double emuRate = static_cast<double>(PCM_GetOutputFrequency(mEmulator.GetPCM()));
+    const double speedRatio = emuRate / mCurrentSampleRate;
+    const int inputNeeded = static_cast<int>(std::ceil(static_cast<double>(numSamples) * speedRatio))
+                            + static_cast<int>(juce::LagrangeInterpolator::getBaseLatency()) + 2;
 
     // Ensure scratch buffer is large enough
     if (mScratchBuffer.getNumSamples() < inputNeeded || mScratchBuffer.getNumChannels() < 2)
@@ -291,9 +296,8 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // Resample from emulator rate to DAW rate
-    if (mCurrentSampleRate == 44100.0)
+    if (emuRate == mCurrentSampleRate)
     {
-        // 1:1 passthrough — no interpolation needed
         buffer.copyFrom(0, 0, scratchL, numSamples);
         buffer.copyFrom(1, 0, scratchR, numSamples);
     }

@@ -114,7 +114,7 @@ private:
     common::LoadRomsetResult   mLoadResult;
 
     //==============================================================================
-    // Sample rate conversion (emulator @ 44.1kHz → DAW rate)
+    // Sample rate conversion (emulator native rate → DAW rate)
     //==============================================================================
     juce::LagrangeInterpolator mInterpolatorL;
     juce::LagrangeInterpolator mInterpolatorR;
