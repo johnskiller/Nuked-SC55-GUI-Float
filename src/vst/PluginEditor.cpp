@@ -263,7 +263,35 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
     // 1. Draw the panel background image
     g.drawImageAt(mBackground, 0, 0);
 
-    // 2. Draw the volume knob
+    // 2. Button LEDs (ALL / MUTE / STANDBY) from sprite sheet rows 466+
+    if (mProcessor.areRomsLoaded() && mBackgroundFull.isValid())
+    {
+        auto& mcu = mProcessor.getEmulator().GetMCU();
+        auto& lcd = mProcessor.getEmulator().GetLCD();
+
+        if (mcu.romset == Romset::MK1 || mcu.romset == Romset::MK2)
+        {
+            const uint32_t buttonEnable = lcd.button_enable.load();
+
+            // ALL / MUTE share the same lit sprite tile in the 2x sheet.
+            if ((buttonEnable & 1) != 0 || (buttonEnable & 2) != 0)
+            {
+                constexpr int sx = 0, sy = 466, sw = 52, sh = 52;
+                constexpr int dw = 26, dh = 26;
+
+                if ((buttonEnable & 1) != 0) // ALL
+                    g.drawImage(mBackgroundFull, 754, 35, dw, dh, sx, sy, sw, sh);
+
+                if ((buttonEnable & 2) != 0) // MUTE
+                    g.drawImage(mBackgroundFull, 754, 82, dw, dh, sx, sy, sw, sh);
+            }
+
+            if ((buttonEnable & 4) != 0) // STANDBY
+                g.drawImage(mBackgroundFull, 118, 42, 10, 10, 0, 518, 20, 20);
+        }
+    }
+
+    // 3. Draw the volume knob
     {
         const float cx = static_cast<float>(kKnobBounds.getCentreX());
         const float cy = static_cast<float>(kKnobBounds.getCentreY());
@@ -290,7 +318,7 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
         g.fillEllipse(cx - 3.5f, cy - 3.5f, 7.0f, 7.0f);
     }
 
-    // 3. Draw model badge from the sprite sheet (rows 466+ of the 2x BMP)
+    // 4. Draw model badge from the sprite sheet (rows 466+ of the 2x BMP)
     if (mProcessor.areRomsLoaded() && mBackgroundFull.isValid())
     {
         auto& mcu = mProcessor.getEmulator().GetMCU();
@@ -327,7 +355,7 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
         }
     }
 
-    // 4. Draw the LCD content into the LCD area on the panel
+    // 5. Draw the LCD content into the LCD area on the panel
     //    (drawn last so it renders on top of the panel, like the standard frontend)
     if (mProcessor.isInitialized() && mLcdImage.getWidth() > 1 && mLcdImage.getHeight() > 1)
     {
@@ -336,7 +364,7 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
                     0, 0, mLcdImage.getWidth(), mLcdImage.getHeight());   // source (full LCD buffer)
     }
 
-    // 5. If ROMs aren't loaded yet, overlay a message on the LCD area
+    // 6. If ROMs aren't loaded yet, overlay a message on the LCD area
     if (!mProcessor.areRomsLoaded())
     {
         // Semi-transparent dark overlay over the LCD
