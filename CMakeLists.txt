@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.19)
+cmake_minimum_required (VERSION 3.22)
 project (nuked-sc55 VERSION 0.6.3 LANGUAGES C CXX)
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
@@ -7,6 +7,68 @@ include(GNUInstallDirs)
 include(TargetWarnings)
 
 set(NUKED_SOURCE "unknown" CACHE STRING "Origin of this build")
+
+#==============================================================================
+# JUCE (for VST3/AU plugin)
+#==============================================================================
+option(NUKED_ENABLE_VST "Build VST3/AU plugin" ON)
+
+if(NUKED_ENABLE_VST)
+    set(JUCE_DIR "${CMAKE_SOURCE_DIR}/external/JUCE" CACHE PATH "Path to JUCE")
+
+    if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "JUCE not found at ${JUCE_DIR}. Please clone:\n"
+                            "  git clone git@github.com:juce-framework/JUCE.git ${JUCE_DIR}")
+    endif()
+
+    # JUCE's CMakeLists.txt creates the juceaide target and sets up all modules
+    add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/JUCE)
+
+    # Override JUCE default company info
+    set_directory_properties(PROPERTIES
+        JUCE_COMPANY_NAME       "NukedSC55"
+        JUCE_COMPANY_WEBSITE    ""
+        JUCE_COMPANY_EMAIL      "")
+
+    juce_add_plugin(nuked-sc55-vst
+        FORMATS VST3 AU
+        PRODUCT_NAME   "Nuked SC-55"
+        BUNDLE_ID      "com.nukedsc55.nuked-sc55-vst"
+        PLUGIN_MANUFACTURER_CODE Nukd
+        PLUGIN_CODE     Sc55
+        IS_SYNTH        TRUE
+        NEEDS_MIDI_INPUT TRUE
+        EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+        COPY_PLUGIN_AFTER_BUILD TRUE
+        VERSION         0.6.3
+    )
+
+    # Generate classic JuceHeader.h for our source files
+    juce_generate_juce_header(nuked-sc55-vst)
+
+    # Suppress VST2/VST3 parameter automation conflict check (first release, no VST2)
+    target_compile_definitions(nuked-sc55-vst PRIVATE
+        JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
+    )
+
+    target_sources(nuked-sc55-vst
+        PRIVATE
+        src/vst/PluginProcessor.cpp
+        src/vst/PluginEditor.cpp
+    )
+
+    target_link_libraries(nuked-sc55-vst
+        PRIVATE
+        nuked-sc55-backend
+        nuked-sc55-common
+    )
+
+    # The backend needs C++23; JUCE is fine with it
+    target_compile_features(nuked-sc55-vst PRIVATE cxx_std_23)
+
+    # Ensure backend and common headers are findable
+    target_include_directories(nuked-sc55-vst PRIVATE "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src")
+endif()
 
 #==============================================================================
 # Tests

@@ -84,5 +84,8 @@ CMakeSettings.json
 # Vendored assets packages shouldn't appear at the GIT history
 /assets/
 
+# External dependencies (cloned, not vendored)
+/external/
+
 # Python Cache Files
 __pycache__/
