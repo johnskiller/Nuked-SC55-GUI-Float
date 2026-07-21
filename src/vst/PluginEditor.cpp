@@ -85,6 +85,8 @@ NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProce
 
     setSize(1120, 233);
 
+    mProcessor.ensureEmulatorReady();
+
     // Poll the LCD state at 60 fps
     startTimerHz(60);
 }
@@ -145,6 +147,8 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
         const uint32_t bit = 1u << bitIndex;
         mButtonsDown |= bit;
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_or(bit);
+        // Let the MCU firmware scan the button matrix and update the LCD.
+        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -183,6 +187,7 @@ void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
     {
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_and(~mButtonsDown);
         mButtonsDown = 0;
+        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -193,6 +198,7 @@ void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
     {
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_and(~mButtonsDown);
         mButtonsDown = 0;
+        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -200,26 +206,16 @@ void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
 //==============================================================================
 void NukedSC55AudioProcessorEditor::timerCallback()
 {
-    if (!mProcessor.isInitialized())
+    mProcessor.ensureEmulatorReady();
+
+    if (!mProcessor.areRomsLoaded())
         return;
 
-    auto& emu = mProcessor.getEmulator();
-    auto& lcd = emu.GetLCD();
+    auto& lcd = mProcessor.getEmulator().GetLCD();
 
-    // Step the emulator when the audio thread is NOT already stepping.
-    // processBlock() sets mAudioThreadStepping while its stepping loop runs.
-    // When the DAW is playing, that flag is set most of the time, so we skip.
-    // When the DAW is stopped, the flag is never set, so we step aggressively:
-    // 50k steps × 60fps = 3M steps/sec — MCU runs faster than real-time,
-    // so boot animation plays in ~1.3s and buttons respond instantly.
-    if (!mProcessor.isAudioThreadStepping())
-    {
-        for (int i = 0; i < 50000; ++i)
-            emu.Step();
-    }
+    // Keep the MCU running when the DAW is idle (SDL uses a dedicated thread).
+    mProcessor.stepEmulatorForUi();
 
-    // Render text into lcd.buffer via the dummy backend.
-    // LCD_Render uses try_lock() internally — safe for concurrent audio.
     LCD_Render(lcd);
 
     // Lock to safely read the rendered buffer

@@ -143,6 +143,10 @@ NukedSC55AudioProcessor::NukedSC55AudioProcessor()
         1.0f,
         juce::AudioParameterFloatAttributes{}.withLabel(" gain"));
     addParameter(mGainParam);
+
+    // Do not wait for prepareToPlay — GUI and ROM/LCD setup must work when the
+    // editor opens, even if the DAW has not started the audio graph yet.
+    ensureEmulatorReady();
 }
 
 NukedSC55AudioProcessor::~NukedSC55AudioProcessor()
@@ -152,14 +156,14 @@ NukedSC55AudioProcessor::~NukedSC55AudioProcessor()
 }
 
 //==============================================================================
-void NukedSC55AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+void NukedSC55AudioProcessor::ensureEmulatorReady()
 {
-    mCurrentSampleRate = sampleRate;
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
     if (!mInitialized)
     {
         EMU_Options opts{};
-        opts.lcd_backend = nullptr;  // LCD handled by editor
+        opts.lcd_backend   = &mLcdBackend;
         opts.rom_directory = mRomDirectory;
 
         if (!mEmulator.Init(opts))
@@ -168,21 +172,10 @@ void NukedSC55AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
             return;
         }
 
-        // Install dummy backend so LCD_Render() can populate lcd.buffer.
-        // Without this, LCD_Render() early-returns and the buffer stays empty.
-        mEmulator.GetLCD().backend = &mLcdBackend;
-
-        // Register sample callback
         mEmulator.SetSampleCallback(sampleCallback, this);
-
         mInitialized = true;
     }
 
-    // Reset interpolators when sample rate changes
-    mInterpolatorL.reset();
-    mInterpolatorR.reset();
-
-    // Auto-discover ROM directory if not set yet
     if (!mRomsLoaded && mRomDirectory.empty())
     {
         auto discovered = autoDiscoverRomDirectory(mSearchedPaths);
@@ -193,9 +186,51 @@ void NukedSC55AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlo
         }
     }
 
-    // Load ROMs if we have a path and they haven't been loaded yet
     if (!mRomsLoaded && !mRomDirectory.empty())
-        loadROMs(mRomDirectory);
+        loadROMsImpl(mRomDirectory);
+}
+
+void NukedSC55AudioProcessor::stepEmulator(int steps)
+{
+    if (steps <= 0 || !mRomsLoaded)
+        return;
+
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+
+    for (int i = 0; i < steps; ++i)
+        mEmulator.Step();
+}
+
+void NukedSC55AudioProcessor::stepEmulatorForUi()
+{
+    if (!mRomsLoaded)
+        return;
+
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+
+    static constexpr int kIdleStepsPerFrame = 50000;
+    int steps = kIdleStepsPerFrame;
+
+    if (mRemainingBootSteps > 0)
+    {
+        steps = std::min(kIdleStepsPerFrame, mRemainingBootSteps);
+        mRemainingBootSteps -= steps;
+    }
+
+    for (int i = 0; i < steps; ++i)
+        mEmulator.Step();
+}
+
+//==============================================================================
+void NukedSC55AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+{
+    mCurrentSampleRate = sampleRate;
+
+    ensureEmulatorReady();
+
+    // Reset interpolators when sample rate changes
+    mInterpolatorL.reset();
+    mInterpolatorR.reset();
 
     ignoreUnused(samplesPerBlock);
 }
@@ -218,9 +253,6 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // Can't generate audio without ROMs
     if (!mInitialized || !mRomsLoaded)
         return;
-
-    // Signal the editor that we're stepping the emulator
-    mAudioThreadStepping.store(true);
 
     // Process incoming MIDI
     for (const auto& metadata : midiMessages)
@@ -247,14 +279,16 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     auto* scratchL = mScratchBuffer.getWritePointer(0);
     auto* scratchR = mScratchBuffer.getWritePointer(1);
 
-    // Step emulator to fill scratch buffer
-    for (int i = 0; i < inputNeeded; ++i)
     {
-        mEmulator.Step();
-        scratchL[i] = mCurrentSample.left;
-        scratchR[i] = mCurrentSample.right;
+        std::lock_guard<std::mutex> lock(mEmulatorMutex);
+
+        for (int i = 0; i < inputNeeded; ++i)
+        {
+            mEmulator.Step();
+            scratchL[i] = mCurrentSample.left;
+            scratchR[i] = mCurrentSample.right;
+        }
     }
-    mAudioThreadStepping.store(false);
 
     // Resample from emulator rate to DAW rate
     if (mCurrentSampleRate == 44100.0)
@@ -276,6 +310,7 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 //==============================================================================
 juce::AudioProcessorEditor* NukedSC55AudioProcessor::createEditor()
 {
+    ensureEmulatorReady();
     return new NukedSC55AudioProcessorEditor(*this);
 }
 
@@ -303,11 +338,9 @@ void NukedSC55AudioProcessor::setStateInformation(const void* data, int sizeInBy
     {
         const auto dir = xml->getStringAttribute("romDirectory").toStdString();
         mRomDirectory = dir;
-
-        // If already initialised, try to load ROMs now
-        if (mInitialized && !mRomsLoaded)
-            loadROMs(dir);
     }
+
+    ensureEmulatorReady();
 
     // Restore gain
     if (mGainParam != nullptr && xml->hasAttribute("gain"))
@@ -315,7 +348,7 @@ void NukedSC55AudioProcessor::setStateInformation(const void* data, int sizeInBy
 }
 
 //==============================================================================
-bool NukedSC55AudioProcessor::loadROMs(const std::string& directory)
+bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
 {
     if (directory.empty())
         return false;
@@ -326,7 +359,6 @@ bool NukedSC55AudioProcessor::loadROMs(const std::string& directory)
         return false;
     }
 
-    // Detect and load ROMs from directory
     mRomsetInfo = {};
     common::RomOverrides overrides{};
     common::LoadRomsetResult result;
@@ -339,7 +371,6 @@ bool NukedSC55AudioProcessor::loadROMs(const std::string& directory)
         return false;
     }
 
-    // Feed ROM data into the emulator
     if (!mEmulator.LoadRoms(result.romset, mRomsetInfo, nullptr))
     {
         DBG("Nuked SC-55: Emulator::LoadRoms failed");
@@ -350,12 +381,12 @@ bool NukedSC55AudioProcessor::loadROMs(const std::string& directory)
     mRomDirectory = directory;
     mRomsLoaded = true;
 
-    // Reset the emulator so it starts using the loaded ROMs
     mEmulator.Reset();
-
-    // Start the LCD — this sets lcd.width/lcd.height and calls
-    // lcd.backend->Start(). Without this, the LCD stays at 0×0 forever.
     mEmulator.StartLCD();
+
+    // MK2 firmware needs ~500k MCU steps before lcd.enable is set and the
+    // boot text appears. Prime in the GUI timer so the first frame is not black.
+    mRemainingBootSteps = 500000;
 
     DBG("Nuked SC-55: ROMs loaded successfully");
     return true;
@@ -364,12 +395,9 @@ bool NukedSC55AudioProcessor::loadROMs(const std::string& directory)
 void NukedSC55AudioProcessor::setRomDirectory(const std::string& path)
 {
     mRomDirectory = path;
+    mRomsLoaded   = false;
 
-    if (mInitialized)
-    {
-        mRomsLoaded = false;  // force re-load
-        loadROMs(path);
-    }
+    ensureEmulatorReady();
 }
 
 void NukedSC55AudioProcessor::triggerGsReset()

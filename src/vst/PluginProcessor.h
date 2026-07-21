@@ -1,8 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include <atomic>
 #include <cmath>
+#include <mutex>
 #include <vector>
 
 #include "backend/audio.h"
@@ -67,9 +67,15 @@ public:
     AudioVolume&  getVolumeControl()  { return mVolumeControl; }
     bool          isInitialized() const { return mInitialized; }
     bool          areRomsLoaded() const { return mRomsLoaded; }
-    /// Returns true if the audio thread is currently stepping the emulator.
-    /// The editor uses this to avoid concurrent stepping in the GUI timer.
-    bool          isAudioThreadStepping() const { return mAudioThreadStepping.load(); }
+
+    /// Initialise emulator + auto-discover/load ROMs (safe to call repeatedly).
+    void ensureEmulatorReady();
+
+    /// Step the emulator under the shared lock (GUI + audio thread).
+    void stepEmulator(int steps);
+
+    /// Timer-driven stepping: keeps MCU alive when DAW is idle + boot priming.
+    void stepEmulatorForUi();
 
     juce::AudioParameterFloat* getGainParam() const { return mGainParam; }
 
@@ -89,9 +95,10 @@ private:
     AudioVolume  mVolumeControl;
     double       mCurrentSampleRate = 44100.0;
     bool         mInitialized = false;
-    bool         mRomsLoaded = false;
+    bool         mRomsLoaded  = false;
 
-    std::atomic<bool> mAudioThreadStepping{ false }; // true while processBlock steps
+    std::mutex   mEmulatorMutex;
+    int          mRemainingBootSteps = 0;
 
     //==============================================================================
     // Parameters
@@ -121,7 +128,7 @@ private:
     //==============================================================================
     static void sampleCallback(void* userdata, const AudioFrame<int32_t>& frame);
 
-    bool loadROMs(const std::string& directory);
+    bool loadROMsImpl(const std::string& directory);
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NukedSC55AudioProcessor)
