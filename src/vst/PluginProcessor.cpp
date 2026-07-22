@@ -121,17 +121,29 @@ static std::string autoDiscoverRomDirectory(std::vector<std::string>& searchedPa
 }
 
 //==============================================================================
-// Static callback — called by the emulator for each sample
+// Static callback — called by the emulator for each audio frame
+// Runs synchronously inside MCU_Step(), under mEmulatorMutex.
 void NukedSC55AudioProcessor::sampleCallback(void* userdata, const AudioFrame<int32_t>& frame)
 {
     auto& self = *static_cast<NukedSC55AudioProcessor*>(userdata);
 
     // Normalize int32 → float
-    Normalize(frame, self.mCurrentSample, self.mVolumeControl);
+    AudioFrame<float> sample;
+    Normalize(frame, sample, self.mVolumeControl);
 
     // Apply gain
     const float gain = self.mGainParam ? self.mGainParam->get() : 1.0f;
-    Scale(self.mCurrentSample, gain);
+    Scale(sample, gain);
+
+    // Push into ring buffer. Every MCU_PostSample call produces exactly one
+    // frame (or two when oversampling is on — both get pushed here).
+    self.mAudioRing[self.mAudioRingWrite % NukedSC55AudioProcessor::kAudioRingSize] = sample;
+    self.mAudioRingWrite++;
+
+    // Also cache last sample for any path that reads it directly (e.g.
+    // stepEmulatorForUi doesn't drain the ring buffer — it just keeps
+    // the MCU alive).
+    self.mCurrentSample = sample;
 }
 
 //==============================================================================
@@ -208,14 +220,26 @@ void NukedSC55AudioProcessor::stepEmulatorForUi()
     if (!mRomsLoaded)
         return;
 
+    // When the DAW is actively calling processBlock (within the last 50ms),
+    // skip stepping entirely.  This avoids both mutex contention (which
+    // glitches the audio thread) AND emulator over-advancement (which
+    // causes audible instability like envelope/LFO timing errors).
+    if (juce::Time::getMillisecondCounter() - mLastProcessBlockTimeMs < 50)
+        return;
+
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
-    static constexpr int kIdleStepsPerFrame = 50000;
+    // Boot priming: push ~500k steps quickly to get MK2 firmware past LCD
+    // init.  After that only light stepping to keep MIDI/mcu alive when DAW
+    // is idle (processBlock does the real stepping during playback).
+    static constexpr int kBootStepsPerFrame = 50000;
+    static constexpr int kIdleStepsPerFrame = 2000;
+
     int steps = kIdleStepsPerFrame;
 
     if (mRemainingBootSteps > 0)
     {
-        steps = std::min(kIdleStepsPerFrame, mRemainingBootSteps);
+        steps = std::min(kBootStepsPerFrame, mRemainingBootSteps);
         mRemainingBootSteps -= steps;
     }
 
@@ -256,6 +280,9 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     if (!mInitialized || !mRomsLoaded)
         return;
 
+    // Track last processBlock time so the UI timer knows the DAW is alive.
+    mLastProcessBlockTimeMs = juce::Time::getMillisecondCounter();
+
     // Process incoming MIDI
     for (const auto& metadata : midiMessages)
     {
@@ -274,30 +301,62 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //--------------------------------------------------------------------------
     const double emuRate = static_cast<double>(PCM_GetOutputFrequency(mEmulator.GetPCM()));
     const double speedRatio = emuRate / mCurrentSampleRate;
-    const int inputNeeded = static_cast<int>(std::ceil(static_cast<double>(numSamples) * speedRatio))
-                            + static_cast<int>(juce::LagrangeInterpolator::getBaseLatency()) + 2;
+    const int framesNeeded = static_cast<int>(std::ceil(static_cast<double>(numSamples) * speedRatio))
+                             + static_cast<int>(juce::LagrangeInterpolator::getBaseLatency()) + 2;
+    // Each MCU step advances cycles by 12; each PCM cycle processes
+    // (reg_slots+1)*25 cycles (worst case ~800 for 32 voices, typical ~400
+    // for SC-55mk2's 16 voices).  So steps per frame ≈ 400/12 ≈ 33.
+    // Use a generous multiplier so we never run out of steps.
+    const int maxSteps = framesNeeded * 80 + 10000;
 
     // Ensure scratch buffer is large enough
-    if (mScratchBuffer.getNumSamples() < inputNeeded || mScratchBuffer.getNumChannels() < 2)
-        mScratchBuffer.setSize(2, inputNeeded, false, false, true);
+    if (mScratchBuffer.getNumSamples() < framesNeeded || mScratchBuffer.getNumChannels() < 2)
+        mScratchBuffer.setSize(2, framesNeeded, false, false, true);
 
     auto* scratchL = mScratchBuffer.getWritePointer(0);
     auto* scratchR = mScratchBuffer.getWritePointer(1);
+    int scratchWritten = 0;
 
     {
         std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
-        for (int i = 0; i < inputNeeded; ++i)
+        // Snapshot the ring-buffer write position before we start stepping.
+        // Every frame pushed during stepping (via sampleCallback) will be
+        // at or after this index.
+        const uint32_t startWrite = mAudioRingWrite;
+
+        for (int step = 0; step < maxSteps; ++step)
         {
             mEmulator.Step();
-            scratchL[i] = mCurrentSample.left;
-            scratchR[i] = mCurrentSample.right;
+
+            // How many new frames have been pushed into the ring?
+            const uint32_t newFrames = mAudioRingWrite - startWrite;
+            if (newFrames >= static_cast<uint32_t>(framesNeeded))
+                break;
         }
+
+        // Drain the ring into scratch.  Under the mutex this is safe:
+        // no-one can push while we read.
+        const uint32_t available = mAudioRingWrite - startWrite;
+        const int toCopy = std::min(static_cast<int>(available), framesNeeded);
+        for (int i = 0; i < toCopy; ++i)
+        {
+            const auto& frame = mAudioRing[(startWrite + static_cast<uint32_t>(i)) % kAudioRingSize];
+            scratchL[i] = frame.left;
+            scratchR[i] = frame.right;
+        }
+        scratchWritten = toCopy;
     }
 
-    // Resample from emulator rate to DAW rate
-    if (emuRate == mCurrentSampleRate)
+    // Resample from emulator rate to DAW rate.
+    // scratchWritten may differ from numSamples: if emuRate > dawRate (e.g.
+    // 64k→44.1k), we upsample fewer real frames into more DAW samples.
+    if (scratchWritten == 0)
+        return;
+
+    if (static_cast<int>(scratchWritten) == numSamples && emuRate == mCurrentSampleRate)
     {
+        // Exact match: direct copy.
         buffer.copyFrom(0, 0, scratchL, numSamples);
         buffer.copyFrom(1, 0, scratchR, numSamples);
     }

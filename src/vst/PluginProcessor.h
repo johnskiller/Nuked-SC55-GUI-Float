@@ -96,7 +96,6 @@ private:
     double       mCurrentSampleRate = 44100.0;
     bool         mInitialized = false;
     bool         mRomsLoaded  = false;
-
     std::mutex   mEmulatorMutex;
     int          mRemainingBootSteps = 0;
 
@@ -121,9 +120,19 @@ private:
     juce::AudioBuffer<float>   mScratchBuffer;
 
     //==============================================================================
-    // Per-sample output collected during processBlock
+    // Audio ring buffer — producer (sampleCallback) and consumer (processBlock)
+    // both run under mEmulatorMutex, so no atomics needed.
     //==============================================================================
-    AudioFrame<float> mCurrentSample{ 0, 0 };
+    static constexpr int kAudioRingSize = 131072;  // 128k frames ≈ 2s @ 64k
+    AudioFrame<float>    mAudioRing[kAudioRingSize];
+    uint32_t             mAudioRingWrite = 0;
+
+    // Temporary frame for normalize/scale in callback
+    AudioFrame<float>    mCurrentSample{ 0, 0 };
+
+    // Timestamp of the most recent processBlock call (millisecond counter).
+    // Used by stepEmulatorForUi() to detect DAW activity and skip stepping.
+    juce::uint64 mLastProcessBlockTimeMs = 0;
 
     //==============================================================================
     static void sampleCallback(void* userdata, const AudioFrame<int32_t>& frame);
