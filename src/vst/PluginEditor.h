@@ -41,6 +41,12 @@ private:
     float mKnobAngle = 4.18879f;         // 240° (SDL default), 0 = top, CW+
     bool  mKnobDragging = false;
 
+    // Cached 1x knob sprite and gap-filling strips (created once from mBackgroundFull)
+    juce::Image mKnobSprite;
+    juce::Image mKnobStripTop, mKnobStripBot, mKnobStripLeft, mKnobStripRight;
+
+    void cacheKnobSprites();
+
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NukedSC55AudioProcessorEditor)
 };

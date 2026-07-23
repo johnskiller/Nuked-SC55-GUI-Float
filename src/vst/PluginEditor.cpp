@@ -89,6 +89,9 @@ NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProce
 
     // Poll the LCD state at 60 fps
     startTimerHz(60);
+
+    // Pre-cache the 1x knob sprite and strips
+    cacheKnobSprites();
 }
 
 NukedSC55AudioProcessorEditor::~NukedSC55AudioProcessorEditor()
@@ -258,6 +261,82 @@ void NukedSC55AudioProcessorEditor::timerCallback()
 }
 
 //==============================================================================
+// Pre-render the 1x knob sprite and gap strips from the 2x background.
+// Called once in the constructor so paint() doesn't rescale every frame.
+void NukedSC55AudioProcessorEditor::cacheKnobSprites()
+{
+    if (!mBackgroundFull.isValid())
+        return;
+
+    const auto& b = kKnobBounds;
+    constexpr float sin45 = 0.7071067811865476f;
+    const int s = b.getHeight() - static_cast<int>(std::floor(b.getHeight() * sin45));
+
+    // 1x knob sprite
+    {
+        auto knob2x = mBackgroundFull.getClippedImage({
+            b.getX() * 2,
+            b.getY() * 2,
+            b.getWidth() * 2,
+            b.getHeight() * 2
+        });
+        mKnobSprite = knob2x.rescaled(b.getWidth(), b.getHeight(),
+                                       juce::Graphics::highResamplingQuality);
+    }
+
+    if (s <= 0)
+        return;
+
+    // Top strip
+    {
+        auto s2x = mBackgroundFull.getClippedImage({
+            b.getX() * 2,
+            b.getY() * 2 - s * 2,
+            b.getWidth() * 2,
+            s * 2
+        });
+        mKnobStripTop = s2x.rescaled(b.getWidth(), s,
+                                      juce::Graphics::highResamplingQuality);
+    }
+
+    // Bottom strip
+    {
+        auto s2x = mBackgroundFull.getClippedImage({
+            b.getX() * 2,
+            b.getY() * 2 + b.getHeight() * 2,
+            b.getWidth() * 2,
+            s * 2
+        });
+        mKnobStripBot = s2x.rescaled(b.getWidth(), s,
+                                      juce::Graphics::highResamplingQuality);
+    }
+
+    // Left strip
+    {
+        auto s2x = mBackgroundFull.getClippedImage({
+            b.getX() * 2 - s * 2,
+            b.getY() * 2,
+            s * 2,
+            b.getHeight() * 2
+        });
+        mKnobStripLeft = s2x.rescaled(s, b.getHeight(),
+                                       juce::Graphics::highResamplingQuality);
+    }
+
+    // Right strip
+    {
+        auto s2x = mBackgroundFull.getClippedImage({
+            b.getX() * 2 + b.getWidth() * 2,
+            b.getY() * 2,
+            s * 2,
+            b.getHeight() * 2
+        });
+        mKnobStripRight = s2x.rescaled(s, b.getHeight(),
+                                        juce::Graphics::highResamplingQuality);
+    }
+}
+
+//==============================================================================
 void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
 {
     // 1. Draw the panel background image
@@ -291,8 +370,42 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
         }
     }
 
-    // 3. Draw the volume knob
+    // 3. Draw the volume knob from the background sprite (matches SDL LCD_DrawKnob)
+    if (mKnobSprite.isValid())
     {
+        const auto& b = kKnobBounds;
+
+        // --- Main rotated knob sprite ---
+        // SDL_RenderCopyEx rotates CW by RAD2DEG(angle) with SDL_FLIP_VERTICAL.
+        // In screen coords (y-down):
+        //   SDL "angle" param = CW rotation.
+        //   JUCE AffineTransform::rotation() = standard-math CCW.
+        //   Standard-math CCW = visually CW in screen coords.
+        //   So use +mKnobAngle (NOT negated) for visual CW match.
+        auto vf = juce::AffineTransform::verticalFlip(static_cast<float>(b.getHeight()));
+        auto rot = juce::AffineTransform::rotation(mKnobAngle,
+                                                     b.getWidth() * 0.5f,
+                                                     b.getHeight() * 0.5f);
+        auto trans = juce::AffineTransform::translation(static_cast<float>(b.getX()),
+                                                         static_cast<float>(b.getY()));
+        auto transform = vf.followedBy(rot).followedBy(trans);
+
+        g.drawImageTransformed(mKnobSprite, transform);
+
+        // --- Gap-filling strips ---
+        if (mKnobStripTop.isValid())
+        {
+            g.drawImageAt(mKnobStripTop,    b.getX(), b.getY() - 18);
+            g.drawImageAt(mKnobStripBot,    b.getX(), b.getY() + b.getHeight());
+            g.drawImageAt(mKnobStripLeft,   b.getX() - 18, b.getY());
+            g.drawImageAt(mKnobStripRight,  b.getX() + b.getWidth(), b.getY());
+        }
+
+        // Sprite already carries the knob's physical indicator → no extra line/dot.
+    }
+    else
+    {
+        // Fallback: simple knob when background image is not available
         const float cx = static_cast<float>(kKnobBounds.getCentreX());
         const float cy = static_cast<float>(kKnobBounds.getCentreY());
         const float radius = 26.0f;
@@ -306,9 +419,8 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
         g.setColour(juce::Colour(0xFF666666));
         g.drawEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f, 1.8f);
 
-        // Indicator line (light blue, pointing from centre to edge at the knob angle)
-        // mKnobAngle: 0 = top, CW+.  Convert to math angle: subtract π/2
-        constexpr float kAngleOffset = 4.71239f;   // π * 1.5
+        // Indicator line
+        constexpr float kAngleOffset = 4.71239f;
         const float ix = cx + std::cos(mKnobAngle - kAngleOffset) * indicatorLen;
         const float iy = cy + std::sin(mKnobAngle - kAngleOffset) * indicatorLen;
         g.setColour(juce::Colour(0xFF88ccff));
