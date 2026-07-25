@@ -3,13 +3,14 @@
 ## 1. 项目背景
 
 **Nuked SC-55** 是一个精确到指令级的 Roland Sound Canvas SC-55 硬音源仿真器（也支持 JV-880、SC-155）。
-当前架构：C++20，CMake 构建，SDL2 桌面前端 + 独立离线渲染器。
+当前架构：C++23，CMake 构建，SDL2 桌面前端 + 独立离线渲染器。
 
-本文件记录将其移植为 VST3/AU 插件（保留硬件面板 GUI）的调研结论和实施方案。
+本文件记录将其移植为 VST3/AU 插件（保留硬件面板 GUI）的设计方案和实现细节。
+构建安装指南见 [`AGENTS.md`](../AGENTS.md)。
 
 ---
 
-## 2. 当前架构
+## 2. 原始架构
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -17,12 +18,13 @@
 │  • MCU 模拟 (NEC V50)  • PCM 合成  • ROM 加载            │
 │  • 音频回调: mcu_sample_callback(void*, AudioFrame<int32>)│
 │  • 无平台依赖、无 GUI 依赖                                │
-│  • 无采样率固定 (~22kHz 无 oversampling / ~44kHz 有)      │
+│  • 采样率由 PCM_GetOutputFrequency() 动态获取             │
+│    SC-55mk2 oversampling: ~66207 Hz, 无: ~33103 Hz       │
 ├──────────────────────────────────────────────────────────┤
 │  src/common/   (nuked-sc55-common)                       │
 │  • ROM 加载器  • 增益计算  • 路径工具                     │
 ├──────────────────────────────────────────────────────────┤
-│  src/standard/  (SDL2 桌面前端)  ← 被替换的目标           │
+│  src/standard/  (SDL2 桌面前端)  ← VST 替换的目标        │
 │  • SDL 音频输出  • LCD 窗口  • RtMidi 输入               │
 │  • 事件循环: 独立仿真线程 + SDL_PollEvent 主线程          │
 ├──────────────────────────────────────────────────────────┤
@@ -39,14 +41,17 @@
 | `Emulator::Reset()` | `() → void` | 复位 |
 | `Emulator::PostMIDI()` | `(span<uint8_t>) → void` | 输入 MIDI 数据 |
 | `Emulator::SetSampleCallback()` | `(mcu_sample_callback, void*) → void` | 注册音频回调 |
-| `Emulator::Step()` | `() → void` | 推进一帧仿真（触发一次回调） |
+| `Emulator::Step()` | `() → void` | 推进一帧仿真（触发零或多次回调） |
 | `mcu_sample_callback` | `typedef void(*)(void*, const AudioFrame<int32_t>&)` | 每 sample 回调，立体声 int32 |
+
+> **注意**：`Step()` 不保证每次调用都产出音频帧。SC-55mk2 (reg_slots=15) 约 33 步产出一帧。
+> 这是 VST 音频管线设计的核心约束（见 §4.4.1）。
 
 ---
 
-## 3. GUI 现状分析
+## 3. GUI 现状分析 (SDL 前端)
 
-当前 GUI (`src/standard/lcd_sdl.h/cpp`) 由四层构成：
+原始 GUI (`src/standard/lcd_sdl.h/cpp`) 由四层构成：
 
 ### 3.1 背景面板
 - `data/sc55_background.bmp` (2240×466) — SC-55 前面板高清扫描图
@@ -87,124 +92,283 @@
 ### 4.1 整体策略
 
 **后端完全不动**，新写 `src/vst/` 替换 `src/standard/`。
-用 JUCE 框架，原因：
+用 JUCE 8 框架，原因：
 - 原生 VST3/AU/AAX 支持
 - `AudioProcessorEditor` 提供 DAW 内嵌编辑器窗口
 - 像素级 Graphics API，完美匹配 LCD framebuffer 渲染
-- BMP/PNG 可编译为 BinaryData
+- PNG 可嵌入为 C 数组（`EmbeddedResources.h`）
 - 内置 Lagrange 插值器用于采样率转换
 
-### 4.2 推荐框架：JUCE 7+
+### 4.2 框架：JUCE 8
 
-| 特性 | 理由 |
+| 特性 | 用途 |
 |---|---|
-| `juce::AudioProcessor` | `processBlock()` 替换当前的 `FE_RunInstanceSDL` |
+| `juce::AudioProcessor` | `processBlock()` 替换 `FE_RunInstanceSDL` |
 | `juce::AudioProcessorEditor` | DAW 管理窗口生命周期，替代 `SDL_CreateWindow` |
-| `juce::Image` | 加载 BMP 做背景，像素操作渲染 LCD |
+| `juce::Image` | 加载 PNG 做背景，像素操作渲染 LCD |
 | `juce::Graphics` | `drawImage()` composite，`drawImageTransformed()` 旋钮旋转 |
-| `juce::BinaryData` | BMP/PNG 编译进插件，无需文件路径 |
-| `juce::LagrangeInterpolator` | 仿真器 44.1kHz → DAW 48kHz 重采样 |
-
-备选方案: iPlug2 (更轻量，但社区和文档不如 JUCE)。
+| `juce::LagrangeInterpolator` | 仿真器 66kHz → DAW 44.1kHz/48kHz 重采样 |
+| `juce::Timer` | 60fps LCD 刷新 + 空闲时 MCU 步进 |
 
 ### 4.3 CMake 集成
 
-在现有 `CMakeLists.txt` 中加入 JUCE 依赖：
+在现有 `CMakeLists.txt` 中通过 `juce_add_plugin()` 添加插件目标：
 
 ```cmake
-# 伪代码结构
-add_subdirectory(JUCE)  # 或 FetchContent
+option(NUKED_ENABLE_VST "Build VST3/AU plugin" ON)
 
-add_library(nuked-sc55-vst SHARED
-    src/vst/PluginProcessor.cpp
-    src/vst/PluginEditor.cpp
-)
-target_link_libraries(nuked-sc55-vst
-    PRIVATE
-    nuked-sc55-backend
-    nuked-sc55-common
-    juce::juce_audio_plugin_client
-    juce::juce_graphics
-    juce::juce_gui_basics
-)
-set_target_properties(nuked-sc55-vst PROPERTIES
-    JUCE_VST3_MANUFACTURER "Nuked"
-    JUCE_VST3_MANUFACTURER_CODE "Nukd"
-    JUCE_VST3_PLUGIN_CODE "SC55"
-)
+if(NUKED_ENABLE_VST)
+    set(JUCE_DIR "${CMAKE_SOURCE_DIR}/external/JUCE" CACHE PATH "Path to JUCE")
+    add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/JUCE)
+
+    juce_add_plugin(nuked-sc55-vst
+        FORMATS VST3 AU
+        PRODUCT_NAME   "Nuked SC-55"
+        BUNDLE_ID      "com.nukedsc55.nuked-sc55-vst"
+        PLUGIN_MANUFACTURER_CODE Nukd
+        PLUGIN_CODE     Sc55
+        IS_SYNTH        TRUE
+        NEEDS_MIDI_INPUT TRUE
+        EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+        COPY_PLUGIN_AFTER_BUILD TRUE
+        VERSION         0.6.3
+    )
+
+    juce_generate_juceheader(nuked-sc55-vst)
+
+    target_sources(nuked-sc55-vst PRIVATE
+        src/vst/PluginProcessor.cpp
+        src/vst/PluginEditor.cpp
+    )
+
+    target_link_libraries(nuked-sc55-vst PRIVATE
+        nuked-sc55-backend
+        nuked-sc55-common
+    )
+
+    target_compile_features(nuked-sc55-vst PRIVATE cxx_std_23)
+endif()
 ```
 
 ### 4.4 音频管线
 
-**当前 (SDL 独立线程)**:
+**SDL 前端 (独立线程)**:
 ```
 独立线程: while(running) { emu.Step(); }
   → 回调 mcu_sample_callback
-  → Normalize + Gain → ringbuffer
+  → Normalize + Gain → SDL ringbuffer
 SDL 音频回调 → 从 ringbuffer 读取 → 输出
 ```
 
-**VST (DAW 音频线程同步)**:
+**VST (DAW 音频线程 + Ring Buffer)**:
 ```
 DAW 音频线程:
   processBlock(outputBuffer, midiMessages):
-    for each MIDI message:
-      emu.PostMIDI(message)
-    for sample = 0 to blockSize:
-      emu.Step()
-      → 回调写入 outputBuffer.getSample(0, sample), (1, sample)
+    for each MIDI message: emu.PostMIDI(byte)
+    lock(mEmulatorMutex):
+      snapshot startWrite = mAudioRingWrite
+      for step in 0..maxSteps:
+        emu.Step()
+        → 回调 sampleCallback → push 到 mAudioRing[writePos++]
+        if mAudioRingWrite - startWrite >= framesNeeded: break
+      drain: scratch[i] = mAudioRing[(startWrite + i) % kAudioRingSize]
+    LagrangeInterpolator.process(speedRatio, scratch, out, numSamples)
+
+UI 定时器 (60fps, 空闲时):
+  stepEmulatorForUi():
+    if DAW 活跃 (processBlock 距今 < 50ms): return  # 零锁竞争
+    lock(mEmulatorMutex):
+      for i in 0..2000: emu.Step()  # 保持 MCU/LCD 活着
 ```
 
-这更简单——不需要中间线程或 ringbuffer。`Step()` 由 DAW 音频线程直接驱动。
+`sampleCallback` 是音频帧的入口点，在 `Step()` → `MCU_Step()` → `PCM_Update()`
+→ `MCU_PostSample` 中被调用（已在 `mEmulatorMutex` 锁内）。完整音频链：
+
+```
+AudioFrame<int32> (PCM 原始输出)
+  → Normalize(frame, sample, mVolumeControl)   # int32→float + 硬件音量
+  → Scale(sample, gain)                          # VST Gain 参数 (0.0–2.0)
+  → mAudioRing[writePos++].push(sample)          # 写入 ring buffer
+  → mCurrentSample = sample                      # 缓存最新帧 (供 UI 直接读)
+```
+
+#### 4.4.1 核心约束：Step 次数 ≠ 音频帧数
+
+`Emulator::Step()` 调用 `MCU_Step()`，推进 MCU 时钟 12 周期，然后调用
+`PCM_Update()`。PCM 每 `(reg_slots+1)×25` 周期才产生一帧音频。
+SC-55mk2 的 reg_slots=15（16 voices），所以：
+
+- **新帧周期** ≈ 400 MCU 周期
+- **step/帧** ≈ 400/12 ≈ 33
+
+早期代码假设每步都产生音频帧，用 `ceil(numSamples × speedRatio)` 作为步数上限，
+结果只攒了 ~200 帧（实际需要 ~770 帧）。插值器读到了 scratch 尾部的垃圾数据
+→ 噪音/错误音高。
+
+**修复方案：Ring Buffer + 充足步数**
+
+1. **Ring Buffer** (`mAudioRing[131072]`)：`sampleCallback` 把每帧写入环形缓冲区，
+   `processBlock` 按序读取。确保每帧都被捕获、无重复、无遗漏。
+2. **步数上限** `maxSteps = framesNeeded × 80 + 10000`：保证跑够帧数。
+3. **动态采样率**：`PCM_GetOutputFrequency()` 获取真实 emuRate，不硬编码。
+
+| 变量 | 含义 | 典型值 |
+|---|---|---|
+| `kAudioRingSize` | 环形缓冲大小 | 131072 (≈2s @ 66kHz) |
+| `maxSteps` | Step 上限 | `framesNeeded × 80 + 10000` |
+| `framesNeeded` | 目标音频帧数 | `ceil(numSamples × emuRate/dawRate) + getBaseLatency() + 2` |
+
+Step 周期计算通用：
+- MCU 每步 12 周期
+- PCM 每帧 `(reg_slots+1)×25` 周期
+- SC-55mk2（16 voices）：~33 步/帧
+- `maxSteps = framesNeeded × 80 + 10000` 是安全的上界
+
+> **设计取舍：无独立读指针**。`processBlock` 每次进入时快照 `mAudioRingWrite`，
+> 步进后只 drain 从快照到新 write 位置的帧。`stepEmulatorForUi` 产出的帧虽然
+> push 进了 ring，但在 `processBlock` 恢复时**被跳过**（不是 drain 的起点）。
+> 这意味着 DAW 停止调用 `processBlock` 期间（如 REAPER 后台失焦），固件内部
+> demo sequencer 产出的音频无法被消费 → demo 停播。这是已知限制，非 bug
+> （Ableton Live 不受影响）。
+
+#### 4.4.2 UI 定时器与音频线程锁竞争
+
+`PluginEditor` 启动 60Hz 定时器，每次回调跑 `stepEmulatorForUi()`。
+早期代码每次跑 50000 步，在 `mEmulatorMutex` 下执行。当编辑器窗口打开时，
+UI 线程和音频线程（`processBlock`）竞争同一把锁，导致 `processBlock` 被延迟
+→ 音频 glitch 和不稳定。
+
+**修复方案：DAW 活跃检测**
+
+```cpp
+// processBlock() 开头:
+mLastProcessBlockTimeMs = juce::Time::getMillisecondCounter();
+
+// stepEmulatorForUi():
+if (juce::Time::getMillisecondCounter() - mLastProcessBlockTimeMs < 50)
+    return;  // DAW 正在处理，彻底跳过（零锁竞争、零 emulator 时间推进）
+```
+
+- Boot 阶段保持 50000 步/帧确保快速启动
+- 启动后降至 2000 步/帧
+- Ring Buffer 和 `mLastProcessBlockTimeMs` 方案均平台无关，VST3/AU 通用
+
+#### 4.4.3 Boot priming
+
+`loadROMsImpl()` 完成后设置 `mRemainingBootSteps = 500000`。Timer 以
+50000 步/帧消耗，总计约 10 帧（~167ms @ 60fps）完成固件启动，使首帧
+LCD 不为黑屏。消耗完毕后自动切换到 idle 模式（2000 步/帧）。
+
+#### 4.4.4 线程安全模型
+
+三把锁保护不同资源，互不嵌套：
+
+| 锁 | 保护对象 | 持有者 | 备注 |
+|---|---|---|---|
+| `mEmulatorMutex` | emulator 全状态 + audio ring | `processBlock` (audio), `stepEmulatorForUi` (UI), `stepEmulator` (UI) | `sampleCallback` 在 `Step()` 内被调，已在锁内 |
+| `lcd.mutex` | `lcd.buffer` / `LCD_Data` 等 | `LCD_Render` 用 `try_lock`（抢不到丢帧）；`timerCallback` 用 `lock_guard` 读 buffer | 非阻塞，避免 UI 卡 audio |
+| 无锁 | `mcu.button_pressed` | `std::atomic<uint32_t>`，mouse/key handler 写，`Step()` 读 | lock-free |
+
+关键约束：
+- `mEmulatorMutex` 持有时间 = `Step()` 循环 + ring drain，应尽量短
+- `stepEmulatorForUi` 在 DAW 活跃时彻底跳过（§4.4.2），零锁竞争
+- `LCD_Render` 的 `try_lock` 策略确保渲染永远不阻塞 audio 线程
 
 ### 4.5 采样率转换
 
 ```
 仿真器内部采样率 = PCM_GetOutputFrequency(pcm)
-                  ≈ 22050 (no oversampling) 或 44100 (oversampling)
+                  SC-55mk2/SCB-55 oversampling: 66207 Hz, 无: 33103 Hz
+                  JV-880/MK1: 64000 Hz / 32000 Hz
 DAW 项目采样率    = 44100 / 48000 / 88200 / 96000
 ```
 
-方案：采样率锁定为 DAW 项目采样率。
-- DAW 44.1kHz: 开 oversampling → 1:1，无转换
-- DAW 48kHz: 需要 SRC，用 `juce::LagrangeInterpolator`
-- 较长 blockSize 下也可以一次产生多个 Step
+- `speedRatio = emuRate / dawRate`（每输出样本消耗的输入样本数）
+- 2× `juce::LagrangeInterpolator` (L/R 独立)
+- `framesNeeded = ceil(numSamples × speedRatio) + getBaseLatency() + 2`
+- `maxSteps = framesNeeded × 80 + 10000`（安全上界）
+- `LagrangeInterpolator::process(speed, in, out, numOut)` 中 `speed` =
+  "每输出样本消耗的输入样本数"（input_per_output）
 
 ### 4.6 MIDI 输入
 
-直接映射：
 ```
 processBlock() 中的 MidiBuffer → 遍历 message →
-  emu.PostMIDI(message.getRawData(), message.getRawDataSize())
+  emu.PostMIDI(message.getRawData(), message.getRawMessageSize())
 ```
-注意 MIDI running status——JUCE 已经处理好，直接传原始字节即可。
+JUCE 已处理 MIDI running status，直接传原始字节。
 
-### 4.7 GUI 移植明细
+### 4.7 ROM 加载与自动发现
 
-| 现有 (SDL) | JUCE 等效 | 要点 |
+`ensureEmulatorReady()` 在构造函数、`prepareToPlay()`、`timerCallback()` 中被调用，
+幂等初始化。ROM 路径来源优先级：
+
+1. **已保存状态**：`setStateInformation()` 恢复的 `mRomDirectory`（DAW preset/session）
+2. **macOS Application Support**：`~/Library/Application Support/NukedSC55/` 及其
+   `roms/` 子目录
+3. **Bundle-relative**：`dladdr` 获取插件二进制路径，向上遍历父目录查找
+4. **DAW 路径 fallback**：`GetProcessPath()` 获取 DAW 可执行文件路径，向上遍历
+
+每级用 `common::LoadRomset()` 做 hash 检测确认有效性。找到后调
+`Emulator::LoadRoms()` → `Emulator::Reset()`，并设置
+`mRemainingBootSteps = 500000` 启动 boot priming（§4.4.3）。
+
+`setRomDirectory()` 允许外部（如未来 FileChooser UI）手动设置路径后触发重新加载。
+
+状态持久化 XML 格式：
+```xml
+<NukedSC55 romDirectory="/path/to/roms" gain="1.0"/>
+```
+`setStateInformation` 恢复 ROM 目录后立即调 `ensureEmulatorReady()` 重新加载。
+
+### 4.8 LCD 渲染
+
+VST 不使用 SDL/OpenGL，而是通过 `VstLCDBackend`（继承 `LCD_Backend`）提供
+dummy 渲染后端：`Start()`/`Stop()`/`Render()` 均为空操作。这使得 `LCD_Render()`
+仍然填充 `lcd.buffer`（像素数据），但不实际显示。
+
+`timerCallback()` 60fps 流程：
+```
+stepEmulatorForUi()           # 推进 MCU（含 LCD 控制器固件）
+LCD_Render(lcd)               # 固件状态 → lcd.buffer 像素
+lock(lcd.mutex):              # 读 buffer（try_lock 在 Render 内已释放）
+  BGR888 → ARGB 逐像素拷贝    # lcd.buffer[y][x] → mLcdImage
+repaint()                     # 触发 paint() 将 mLcdImage 绘制到屏幕
+```
+
+`paint()` 中额外渲染：
+- **按钮 LED**：从背景图 sprite sheet 行 466+ 裁剪 lit 状态图块（ALL/MUTE/STANDBY）
+- **型号徽章**：从 sprite sheet 根据 romset 绘制 MK1/MK2 徽章
+- **音量旋钮**：从背景图裁剪旋钮 sprite + `AffineTransform` 旋转 + 4 条 gap-filling strip 填充旋转空洞
+
+### 4.9 GUI 移植明细
+
+| SDL 原始 | JUCE 实现 | 状态 |
 |---|---|---|
-| `SDL_Window` | `AudioProcessorEditor` | DAW 管理，开窗口时调用 `editor->setVisible(true)` |
-| `SDL_Renderer` | `juce::Graphics` | 在 `paint(Graphics&)` 中绘制 |
-| `m_lcd->buffer` 像素上传 | `Image::ARGB` + `setPixelAt()` | 或 `Image::BitmapData` 批量写入 |
-| `SDL_UpdateTexture` | 每帧调用 `repaint()` → `paint()` | 用 Timer 或 AudioProcessor 的 `updateHostDisplay()` |
-| 背景 BMP | `ImageFileFormat::loadFrom(BinaryData)` + `drawImageAt()` | BMP 编译为 BinaryData |
-| `SDL_RenderCopy` (背景/按钮) | `g.drawImage()` / `g.drawImageWithin()` | 注意 Retina 缩放 (`component.setScale`) |
-| `LCD_DrawKnob` (旋转 sprite) | `g.addTransform(AffineTransform::rotation())` + `drawImageTransformed()` | 以旋钮中心旋转 |
-| 按钮点击检测 | `mouseDown()` + `HitTest` / `Component::contains()` | 用 `Rectangle<int>` 数组做区域检测，逻辑完全照搬 |
-| 旋钮拖拽 | `mouseDrag()` 计算角度差 | `atan2()` 逻辑直接复制 |
-| 键盘快捷键 | `keyPressed()` / `keyStateChanged()` | SDL scancode map → JUCE `KeyPress` |
-| `SDL_WINDOWEVENT_CLOSE` | `AudioProcessorEditor` 的 `closeButtonPressed()` | 不用退出 DAW，只需通知 "关闭编辑器" |
-| `LCD_VolumeChanged()` | 复用原函数 | 输出增益映射为 `AudioProcessor` 参数 |
-| 多 inst 路由 | 单个 VST 实例通常不需要 | VST 插件本身就是一个实例 (简化) |
+| `SDL_Window` | `AudioProcessorEditor` | ✅ DAW 管理生命周期 |
+| `SDL_Renderer` | `juce::Graphics` in `paint()` | ✅ |
+| `lcd.buffer` 像素上传 | `Image::ARGB` + `BitmapData` 批量写入 | ✅ 60fps Timer |
+| 背景 BMP | `sc55_background.png` 嵌入为 C 数组 (`EmbeddedResources.h`) | ✅ SC-55 only |
+| `SDL_RenderCopy` (背景) | `g.drawImageAt()` | ✅ |
+| `LCD_DrawKnob` (旋转 sprite) | `AffineTransform` + `drawImageTransformed()` | ✅ 从背景图 sprite 裁剪 |
+| 按钮点击检测 | `mouseDown()` + `ButtonRegion[]` 区域检测 | ✅ 19 个按钮 |
+| 按钮 LED | 从背景图 sprite sheet 裁剪 lit 状态 | ✅ ALL/MUTE/STANDBY |
+| 旋钮拖拽 | `mouseDrag()` + `atan2` | ✅ 双击复位 |
+| 键盘快捷键 | `keyPressed()` / `keyStateChanged()` | ✅ SC-55 + JV-880 |
+| `LCD_VolumeChanged()` | `updateVolumeFromKnob()` → `AudioVolume` | ✅ |
+| VST 参数 | `juce::AudioParameterFloat` (Gain 0.0–2.0) | ✅ |
 
-### 4.8 VST 参数映射
+### 4.10 VST 参数
 
-| 参数 | 类型 | 范围 | 映射 |
+| 参数 | 类型 | 范围 | 实现 |
 |---|---|---|---|
-| 音量 | float 0-1 | `AudioVolume` | `lcd.volume` + `Out_SDL_SetVolume` 逻辑 |
-| GS/GM Reset | 按钮 | `EMU_SystemReset` | `PostSystemReset()` |
-| Oversampling | switch | on/off | `pcm.disable_oversampling` |
-| 增益 (Gain) | float dB | -24 ~ +24 | `Scale()` 系数 |
+| 增益 (Gain) | `AudioParameterFloat` | 0.0–2.0, skew 0.5 | `sampleCallback` 中 `Scale()` |
+| GS Reset | 方法 | — | `triggerGsReset()` → SysEx |
+| GM Reset | 方法 | — | `triggerGmReset()` → SysEx |
+| ROM 目录 | XML 状态 | 路径字符串 | `getStateInformation` / `setStateInformation` |
+
+> 音量旋钮控制 `AudioVolume`（硬件音量），Gain 参数独立 automatable。
+> 两者不绑定——旋钮不改变 Gain 参数值。
 
 ---
 
@@ -216,58 +380,62 @@ src/common/                         ← 完全不动
 src/renderer/                       ← 保留
 
 data/
-├── sc55_background.bmp             ← 转为 PNG 后嵌入 BinaryData
-└── jv880_background.bmp            ← 转为 PNG 后嵌入 BinaryData
+├── sc55_background.bmp             ← SDL 前端使用
+├── sc55_background.png             ← VST 嵌入使用 (由 BMP 转换)
+└── jv880_background.bmp            ← SDL 前端使用 (VST 暂未嵌入)
 
-src/vst/                            ← 新建
-├── CMakeLists.txt                  ← JUCE 构建集成
-├── PluginProcessor.h               ← juce::AudioProcessor
-├── PluginProcessor.cpp             ← processBlock(), 参数管理, ROM 初始化
-├── PluginEditor.h                  ← juce::AudioProcessorEditor
-├── PluginEditor.cpp                ← paint(), 鼠标事件, 键盘事件
-├── LcdCanvas.h                     ← LCD 像素渲染逻辑 (原 lcd_sdl 的渲染部分)
-├── LcdCanvas.cpp
-├── KnobComponent.h                 ← 旋钮组件 (可选，也可以直接在 Editor 中处理)
-├── KnobComponent.cpp
-├── SrcResampler.h                  ← 采样率转换 (封装 LagrangeInterpolator)
-├── SrcResampler.cpp
-├── BinaryData/                     ← JUCE 自动生成 (资源文件)
-│   ├── sc55_background.png
-│   └── jv880_background.png
-└── JuceLibraryCode/                ← JUCE 自动生成 (Projucer 或 CMake)
+src/vst/                            ← VST 插件
+├── PluginProcessor.h               ← juce::AudioProcessor 声明
+├── PluginProcessor.cpp             ← processBlock, SRC, ROM 加载, 状态持久化
+├── PluginEditor.h                  ← juce::AudioProcessorEditor 声明
+├── PluginEditor.cpp                ← 面板渲染, LCD, 按钮/旋钮/键盘交互
+└── EmbeddedResources.h             ← PNG 背景 + ROM 路径自动生成的 C 数组
+
+external/JUCE/                      ← JUCE 8 (git clone, .gitignored)
 ```
+
+> 没有 `LcdCanvas`、`KnobComponent`、`SrcResampler` 等独立组件文件——
+> 所有逻辑直接写在 `PluginEditor.cpp` 和 `PluginProcessor.cpp` 中。
 
 ---
 
-## 6 实施步骤 (按依赖顺序)
+## 6 实现状态
 
-### Phase 1: 构建基建
-1. 引入 JUCE (via FetchContent 或 git submodule)
-2. 在 CMakeLists.txt 中添加 `nuked-sc55-vst` 目标
-3. 确认 SDL 前端可独立编译（不影响 VST 目标）
+### ✅ 构建基建
+- JUCE 8 通过 `external/JUCE` 子目录集成
+- `juce_add_plugin()` + `juce_generate_juceheader()`
+- C++23, `COPY_PLUGIN_AFTER_BUILD` 自动安装
+- VST3 + AU 双格式
 
-### Phase 2: 核心音频/MIDI 管线
-4. 实现 `PluginProcessor`:
-   - `processBlock()`: MIDI → `PostMIDI()`, 循环 `Step()` + 收集音频
-   - 采样率转换 (LagrangeInterpolator)
-   - 参数管理 (juce::AudioParameterFloat/Float)
-5. 实现 ROM 初始化流程:
-   - 插件的 `initialize()` 或首次 `prepareToPlay()` 时加载 ROM
-   - ROM 路径参数化
+### ✅ 核心音频/MIDI 管线
+- `processBlock()`: MIDI → `PostMIDI()`, 循环 `Step()` + ring buffer 收集音频
+- 采样率转换: 2× `LagrangeInterpolator`, `PCM_GetOutputFrequency()` 动态获取 emuRate
+- ROM 加载: `common::LoadRomset()` 按 hash 检测 → `Emulator::LoadRoms()` → `Reset()`
+- ROM 路径自动发现: 从插件二进制路径向上搜索 (`autoDiscoverRomDirectory()`)
+- 增益参数: `AudioParameterFloat` (0.0–2.0, skew 0.5)
+- GS/GM Reset: `PostSystemReset()` via `triggerGsReset()` / `triggerGmReset()`
+- 状态持久化: XML 保存/恢复 ROM directory + gain
+- 静音安全: 无 ROM 时 `buffer.clear()`
 
-### Phase 3: GUI 移植
-6. 实现 `PluginEditor`:
-   - 背景图加载与绘制
-   - LCD buffer 像素渲染
-   - 按钮热区 + 点击处理
-   - 旋钮绘制 + 拖拽交互
-   - 键盘快捷键
-7. 绑定 VST 参数与 GUI 控件
+### ✅ GUI Editor
+- 面板背景: PNG 嵌入, 2x→1x 缩放 (2240×466 → 1120×233)
+- LCD: 60fps Timer, 锁 `lcd.mutex`, BGR888→ARGB 逐像素拷贝
+- 无 ROM 时: 黑色半透明遮罩 + 提示文字
+- 19 个按钮热区: `ButtonRegion` 数组 + `mouseDown/Up/Exit` → `button_pressed` atomic
+- 按钮 LED: ALL/MUTE/STANDBY 从背景图 sprite sheet 裁剪
+- 音量旋钮: 从背景图 sprite 裁剪, `AffineTransform` 旋转, 拖拽 + 双击复位
+- 键盘热键: SC-55 (21 映射) + JV-880 (14 映射 + 编码器), `setWantsKeyboardFocus(true)`
 
-### Phase 4: 收尾
-8. 测试多采样率 (44.1k/48k/96k)
-9. 测试多平台 (macOS AU + VST3, Windows VST3)
-10. 文档 + 许可声明（MAME 非商业许可）
+### ✅ 音频 bug 修复
+- Ring buffer 替代单帧缓存 (§4.4.1)
+- UI 定时器 DAW 活跃检测, 避免锁竞争 (§4.4.2)
+
+### ✅ 多 DAW 验证
+- REAPER: VST3 正常
+- Ableton Live: VST3 正常
+- 打开/关闭编辑器窗口均无异常
+- 频谱分析确认基频准确（A4 = 440Hz，C4 = 261.6Hz）
+- 不同 buffer size（64/128/256/512/1024）均正常
 
 ---
 
@@ -276,18 +444,33 @@ src/vst/                            ← 新建
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | **MAME 非商业许可** | 不能销售/商业使用 | 个人/开源项目无影响。商业需换基础代码 |
-| **实时性能** | `Step()` 含 MCU 仿真 + PCM 合成 | 现有 SDL 前端已证明实时可行。Profile bad case |
-| **采样率差异** | 44.1kHz 仿真 → 48kHz 宿主 | Lagrange 插值。或内部锁 44.1kHz（限制使用场景） |
+| **实时性能** | `Step()` 含 MCU 仿真 + PCM 合成 | 现有 SDL 前端已证明实时可行 |
+| **采样率差异** | emuRate ~66kHz → DAW 44.1/48kHz | `LagrangeInterpolator` 重采样 |
 | **ROM 版权** | SC-55 firmware dump 有版权 | 用户自备 ROM。插件不分发。 |
-| **JUCE 许可** | JUCE 6/7: GPLv3 或商业许可 | GPLv3 与 MAME-nc 兼容需确认。或改用 iPlug2 |
-| **多实例/MIDI 路由** | 当前前端支持 16 实例轮询 | VST 实例本身是单实例。如需多实例可用多个插件轨道 |
-| **LCD 刷新率** | SDL 是 15ms 循环，VST 用 Timer | 用 `Timer` 或 DAW 的 `postUpdate()` |
+| **JUCE 许可** | JUCE 8: GPLv3 或商业许可 | GPLv3 与 MAME-nc 兼容需确认 |
+| **REAPER 后台行为** | DAW 失焦时停止调 `processBlock`, 固件 demo 停播 | DAW 行为差异, 非 bug。Ableton Live 不受影响 |
 
 ---
 
-## 8 关键结论
+## 8 剩余待办
 
-1. **技术上完全可行**。后端音频/MIDI 接口 (`Step()` + `PostMIDI()` + `mcu_sample_callback`) 天然适配 VST 插件架构。
-2. **GUI 保留可行且合理**。SC-55 的设备面板本身就是软音源 GUI 的理想形态。JUCE 可以完整复现 SDL 的 bitmap+旋钮+按钮 渲染方式。
-3. **管线反而更简单**。VST 的 `processBlock()` 同步驱动 `Step()`，无需独立仿真线程和 ringbuffer。
-4. **唯一硬限制是 MAME 许可**。发布的插件不能收费、不能用于商业音乐制作。
+| 项 | 说明 |
+|---|---|
+| ROM 目录选择 UI | 当前依赖自动发现或 DAW preset 保存路径, 无 FileChooser 对话框 |
+| JV-880 面板背景 | 键盘热键已支持 JV-880, 但面板背景仅 SC-55。需嵌入 `jv880_background.png` |
+| auval 验证 | `auval -v aufx Nukd Sc55` 需确认 AU type code (`aufx` vs `aumu`) |
+| 多平台测试 | macOS AU + VST3 已验证, Windows/Linux 未测 |
+
+---
+
+## 9 关键文件
+
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `CMakeLists.txt` | — | VST 集成 + 插件目标 (约 50 行 VST 相关) |
+| `src/vst/PluginProcessor.h` | 143 | `AudioProcessor` 声明: ring buffer, SRC, ROM, 参数 |
+| `src/vst/PluginProcessor.cpp` | 482 | `processBlock`, 采样率转换, ROM 加载, 状态持久化 |
+| `src/vst/PluginEditor.h` | 60 | `AudioProcessorEditor` 声明: 事件, Timer, 旋钮, 键盘 |
+| `src/vst/PluginEditor.cpp` | 638 | 面板渲染, LCD, 按钮/旋钮/键盘交互, sprite 缓存 |
+| `src/vst/EmbeddedResources.h` | ~12k | PNG 背景数据 (C 数组, 自动生成) |
+| `data/sc55_background.png` | — | SC-55 面板 2x 位图 (由 BMP 转换) |
