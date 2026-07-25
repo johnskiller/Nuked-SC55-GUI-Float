@@ -57,6 +57,11 @@ private:
     float mKnobAngle = 4.18879f;         // 240° (SDL default), 0 = top, CW+
     bool  mKnobDragging = false;
 
+    // JV-880 encoder (relative drag, 15° per step)
+    bool  mEncoderDragging = false;
+    float mEncoderLastAngle = 0.0f;
+    float mEncoderAccumDelta = 0.0f;
+
     // Keyboard-pressed button bits (tracked separately from mouse for clean release)
     uint32_t mKeyboardBits = 0;
 

@@ -477,15 +477,12 @@ void NukedSC55AudioProcessor::setRomDirectory(const std::string& path)
 
 void NukedSC55AudioProcessor::switchRomset(const std::string& romsetName)
 {
-    {
-        std::lock_guard<std::mutex> lock(mEmulatorMutex);
-        mDesiredRomset = romsetName;
-        mRomsLoaded = false;
-    }
-
-    // Reload ROMs with the new desired romset
-    if (!mRomDirectory.empty())
-        loadROMsImpl(mRomDirectory);
+    // Just set the desired romset and mark ROMs unloaded. The actual reload
+    // happens in ensureEmulatorReady() (called from timerCallback) under the
+    // mutex. Calling loadROMsImpl here would race with ensureEmulatorReady.
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+    mDesiredRomset = romsetName;
+    mRomsLoaded = false;
 }
 
 void NukedSC55AudioProcessor::triggerGsReset()

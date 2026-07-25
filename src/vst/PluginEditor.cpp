@@ -63,6 +63,10 @@ constexpr auto kNumButtonsJv880 = sizeof(kButtonRegionsJv880) / sizeof(kButtonRe
 // Volume knob geometry and limits
 static const juce::Rectangle<int> kKnobBounds     { 153, 42, 59, 59 };  // SC-55
 static const juce::Rectangle<int> kKnobBoundsJv880{  23, 86, 59, 59 };  // JV-880
+
+// JV-880 encoder dial (relative drag, 15° per step)
+static const juce::Rectangle<int> kEncoderBoundsJv880{ 706, 39, 64, 64 };
+static constexpr float kEncoderStep = 0.261799f;  // 15° in radians
 static constexpr float kKnobMinAngle   = 0.523599f;   //  30° in radians
 static constexpr float kKnobMaxAngle   = 5.75959f;    // 330° in radians
 static constexpr float kKnobDefAngle   = 4.18879f;    // 240° in radians
@@ -394,6 +398,17 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
         return;
     }
 
+    // --- JV-880 encoder (relative drag, not absolute) ---
+    if (isJv880Romset() && kEncoderBoundsJv880.contains(static_cast<int>(mx), static_cast<int>(my)))
+    {
+        mEncoderDragging = true;
+        const float cx = kEncoderBoundsJv880.getCentreX();
+        const float cy = kEncoderBoundsJv880.getCentreY();
+        mEncoderLastAngle = std::atan2(my - cy, mx - cx);
+        mEncoderAccumDelta = 0.0f;
+        return;
+    }
+
     // --- Not the knob — test buttons ---
     const int bitIndex = findButtonAt(static_cast<int>(mx),
                                        static_cast<int>(my));
@@ -408,19 +423,48 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
 
 void NukedSC55AudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
 {
-    if (!mKnobDragging)
+    if (mKnobDragging)
+    {
+        const auto knob = getKnobBounds();
+        const float cx = knob.getCentreX();
+        const float cy = knob.getCentreY();
+        float raw = std::atan2(event.position.y - cy, event.position.x - cx);
+        raw += 4.71239f;                              // 0 → top (12 o'clock)
+        if (raw < 0.0f)      raw += 6.28318f;
+        if (raw >= 6.28318f) raw -= 6.28318f;
+        mKnobAngle = std::max(kKnobMinAngle, std::min(kKnobMaxAngle, raw));
+        updateVolumeFromKnob();
+        repaint();
         return;
+    }
 
-    const auto knob = getKnobBounds();
-    const float cx = knob.getCentreX();
-    const float cy = knob.getCentreY();
-    float raw = std::atan2(event.position.y - cy, event.position.x - cx);
-    raw += 4.71239f;                              // 0 → top (12 o'clock)
-    if (raw < 0.0f)      raw += 6.28318f;
-    if (raw >= 6.28318f) raw -= 6.28318f;
-    mKnobAngle = std::max(kKnobMinAngle, std::min(kKnobMaxAngle, raw));
-    updateVolumeFromKnob();
-    repaint();
+    // JV-880 encoder: relative drag, trigger MCU_EncoderTrigger per 15° step
+    if (mEncoderDragging)
+    {
+        const float cx = kEncoderBoundsJv880.getCentreX();
+        const float cy = kEncoderBoundsJv880.getCentreY();
+        const float angle = std::atan2(event.position.y - cy, event.position.x - cx);
+
+        float delta = angle - mEncoderLastAngle;
+        if (delta > juce::MathConstants<float>::pi)  delta -= juce::MathConstants<float>::twoPi;
+        if (delta < -juce::MathConstants<float>::pi) delta += juce::MathConstants<float>::twoPi;
+
+        mEncoderAccumDelta += delta;
+        mEncoderLastAngle = angle;
+
+        // Trigger encoder steps (15° = kEncoderStep)
+        auto& mcu = mProcessor.getEmulator().GetMCU();
+        while (mEncoderAccumDelta >= kEncoderStep)
+        {
+            MCU_EncoderTrigger(mcu, 1);  // CW
+            mEncoderAccumDelta -= kEncoderStep;
+        }
+        while (mEncoderAccumDelta <= -kEncoderStep)
+        {
+            MCU_EncoderTrigger(mcu, 0);  // CCW
+            mEncoderAccumDelta += kEncoderStep;
+        }
+    }
 }
 
 void NukedSC55AudioProcessorEditor::updateVolumeFromKnob()
@@ -436,6 +480,7 @@ void NukedSC55AudioProcessorEditor::updateVolumeFromKnob()
 void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
 {
     mKnobDragging = false;
+    mEncoderDragging = false;
 
     if (mButtonsDown != 0)
     {
@@ -448,6 +493,8 @@ void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
 void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
 {
     mMenuHover = false;
+    mKnobDragging = false;
+    mEncoderDragging = false;
 
     if (mButtonsDown != 0)
     {
@@ -776,19 +823,18 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
         const auto b = getKnobBounds();
 
         // --- Main rotated knob sprite ---
-        // SDL_RenderCopyEx rotates CW by RAD2DEG(angle) with SDL_FLIP_VERTICAL.
-        // In screen coords (y-down):
-        //   SDL "angle" param = CW rotation.
-        //   JUCE AffineTransform::rotation() = standard-math CCW.
-        //   Standard-math CCW = visually CW in screen coords.
-        //   So use +mKnobAngle (NOT negated) for visual CW match.
-        auto vf = juce::AffineTransform::verticalFlip(static_cast<float>(b.getHeight()));
+        // SDL_RenderCopyEx rotates CW by RAD2DEG(angle).
+        // SC-55 uses SDL_FLIP_VERTICAL; JV-880 does NOT.
+        // In screen coords (y-down), standard-math CCW = visually CW.
         auto rot = juce::AffineTransform::rotation(mKnobAngle,
                                                      b.getWidth() * 0.5f,
                                                      b.getHeight() * 0.5f);
         auto trans = juce::AffineTransform::translation(static_cast<float>(b.getX()),
                                                          static_cast<float>(b.getY()));
-        auto transform = vf.followedBy(rot).followedBy(trans);
+        auto transform = isJv880Romset()
+            ? rot.followedBy(trans)
+            : juce::AffineTransform::verticalFlip(static_cast<float>(b.getHeight()))
+                  .followedBy(rot).followedBy(trans);
 
         g.drawImageTransformed(mKnobSprite, transform);
 
