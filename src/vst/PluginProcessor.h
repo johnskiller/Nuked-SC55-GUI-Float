@@ -96,6 +96,7 @@ private:
     double       mCurrentSampleRate = 44100.0;
     bool         mInitialized = false;
     bool         mRomsLoaded  = false;
+    bool         mDiscoveryAttempted = false;
     std::mutex   mEmulatorMutex;
     int          mRemainingBootSteps = 0;
 

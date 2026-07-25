@@ -190,8 +190,9 @@ void NukedSC55AudioProcessor::ensureEmulatorReady()
         mInitialized = true;
     }
 
-    if (!mRomsLoaded && mRomDirectory.empty())
+    if (!mRomsLoaded && !mDiscoveryAttempted)
     {
+        mDiscoveryAttempted = true;
         auto discovered = autoDiscoverRomDirectory(mSearchedPaths);
         if (!discovered.empty())
         {
@@ -423,6 +424,7 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
     if (!std::filesystem::exists(directory))
     {
         DBG("Nuked SC-55: ROM directory does not exist: " + directory);
+        mRomDirectory.clear();
         return false;
     }
 
@@ -435,6 +437,7 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
     if (static_cast<int>(err) != 0)
     {
         DBG("Nuked SC-55: LoadRomset failed: " + juce::String(common::ToCString(err)));
+        mRomDirectory.clear();
         return false;
     }
 
