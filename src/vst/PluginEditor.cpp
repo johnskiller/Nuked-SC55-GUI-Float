@@ -202,8 +202,6 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
         const uint32_t bit = 1u << bitIndex;
         mButtonsDown |= bit;
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_or(bit);
-        // Let the MCU firmware scan the button matrix and update the LCD.
-        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -242,7 +240,6 @@ void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
     {
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_and(~mButtonsDown);
         mButtonsDown = 0;
-        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -253,7 +250,6 @@ void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
     {
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_and(~mButtonsDown);
         mButtonsDown = 0;
-        mProcessor.stepEmulator(10000);
         repaint();
     }
 }
@@ -291,7 +287,6 @@ bool NukedSC55AudioProcessorEditor::keyPressed(const juce::KeyPress& key)
             {
                 mKeyboardBits |= bit;
                 mcu.button_pressed.fetch_or(bit);
-                mProcessor.stepEmulator(10000);
                 repaint();
             }
             return true;
@@ -323,7 +318,6 @@ bool NukedSC55AudioProcessorEditor::keyStateChanged(bool isKeyDown)
         auto& mcu = mProcessor.getEmulator().GetMCU();
         mcu.button_pressed.fetch_and(~mKeyboardBits);
         mKeyboardBits = 0;
-        mProcessor.stepEmulator(10000);
         repaint();
     }
     return false;

@@ -229,21 +229,12 @@ void NukedSC55AudioProcessor::stepEmulatorForUi()
 
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
-    // Boot priming: push ~500k steps quickly to get MK2 firmware past LCD
-    // init.  After that only light stepping to keep MIDI/mcu alive when DAW
-    // is idle (processBlock does the real stepping during playback).
-    static constexpr int kBootStepsPerFrame = 50000;
+    // Light stepping to keep MIDI/mcu alive when DAW is idle.
+    // Boot priming is handled in processBlock (audio thread) to avoid
+    // UI→audio lock contention during the heavy 500k-step init.
     static constexpr int kIdleStepsPerFrame = 2000;
 
-    int steps = kIdleStepsPerFrame;
-
-    if (mRemainingBootSteps > 0)
-    {
-        steps = std::min(kBootStepsPerFrame, mRemainingBootSteps);
-        mRemainingBootSteps -= steps;
-    }
-
-    for (int i = 0; i < steps; ++i)
+    for (int i = 0; i < kIdleStepsPerFrame; ++i)
         mEmulator.Step();
 }
 
@@ -319,6 +310,19 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     {
         std::lock_guard<std::mutex> lock(mEmulatorMutex);
+
+        // Boot priming: MK2 firmware needs ~500k MCU steps before lcd.enable
+        // is set and the boot text appears. Do this on the audio thread to
+        // avoid UI→audio lock contention. Each processBlock call consumes a
+        // chunk; at 64 samples/44.1kHz this completes in ~10 blocks (~15ms).
+        if (mRemainingBootSteps > 0)
+        {
+            static constexpr int kBootStepsPerBlock = 50000;
+            const int steps = std::min(kBootStepsPerBlock, mRemainingBootSteps);
+            mRemainingBootSteps -= steps;
+            for (int i = 0; i < steps; ++i)
+                mEmulator.Step();
+        }
 
         // Snapshot the ring-buffer write position before we start stepping.
         // Every frame pushed during stepping (via sampleCallback) will be
