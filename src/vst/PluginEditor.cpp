@@ -3,6 +3,7 @@
 #include "backend/lcd.h"
 
 #include <atomic>
+#include <filesystem>
 #include <mutex>
 
 //==============================================================================
@@ -96,12 +97,42 @@ constexpr auto kJv880KeyMapSize = sizeof(kJv880KeyMap) / sizeof(kJv880KeyMap[0])
 NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProcessor& p)
     : AudioProcessorEditor(&p), mProcessor(p)
 {
-    // Load the 2x background PNG from embedded data
-    juce::MemoryInputStream bgStream(
-        _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png,
-        _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png_len,
-        false);
-    auto rawBg = juce::ImageFileFormat::loadFrom(bgStream);
+    // Load the 2x background PNG.
+    // Priority: sc55_background.png in the ROM directory, then embedded fallback.
+    // Both sources are 2240×588, so all sprite coordinates stay identical.
+    juce::Image rawBg;
+    std::string bgSource;  // for debug log
+
+    {
+        const auto& romDir = mProcessor.getRomDirectory();
+        fprintf(stdout, "[Nuked SC-55] ROM directory: %s\n",
+                romDir.empty() ? "(not set)" : romDir.c_str());
+        fflush(stdout);
+
+        if (!romDir.empty())
+        {
+            auto pngPath = std::filesystem::path(romDir) / "sc55_background.png";
+            if (std::filesystem::exists(pngPath))
+            {
+                rawBg = juce::ImageFileFormat::loadFrom(juce::File(pngPath.string()));
+                if (rawBg.isValid())
+                    bgSource = pngPath.string();
+            }
+        }
+    }
+
+    if (!rawBg.isValid())
+    {
+        juce::MemoryInputStream bgStream(
+            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png,
+            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png_len,
+            false);
+        rawBg = juce::ImageFileFormat::loadFrom(bgStream);
+        bgSource = "embedded fallback";
+    }
+
+    fprintf(stdout, "[Nuked SC-55] Background loaded from: %s\n", bgSource.c_str());
+    fflush(stdout);
 
     if (rawBg.isValid())
     {
