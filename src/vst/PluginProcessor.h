@@ -104,6 +104,7 @@ private:
     bool         mInitialized = false;
     bool         mRomsLoaded  = false;
     bool         mDiscoveryAttempted = false;
+    bool         mForceReinit = false;  // force full emulator re-init on romset switch
     std::mutex   mEmulatorMutex;
     int          mRemainingBootSteps = 0;
 

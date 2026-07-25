@@ -174,6 +174,17 @@ void NukedSC55AudioProcessor::ensureEmulatorReady()
 {
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
+    // Romset switch requires full re-init to clear previous romset state.
+    if (mForceReinit)
+    {
+        if (mInitialized)
+            mEmulator.StopLCD();
+        mInitialized = false;
+        mForceReinit = false;
+        fprintf(stdout, "[Nuked SC-55] ensureEmulatorReady: forced re-init\n");
+        fflush(stdout);
+    }
+
     if (!mInitialized)
     {
         EMU_Options opts{};
@@ -202,7 +213,13 @@ void NukedSC55AudioProcessor::ensureEmulatorReady()
     }
 
     if (!mRomsLoaded && !mRomDirectory.empty())
+    {
+        fprintf(stdout, "[Nuked SC-55] ensureEmulatorReady: calling loadROMsImpl, romset='%s', dir='%s'\n",
+                mDesiredRomset.empty() ? "(auto)" : mDesiredRomset.c_str(),
+                mRomDirectory.c_str());
+        fflush(stdout);
         loadROMsImpl(mRomDirectory);
+    }
 }
 
 void NukedSC55AudioProcessor::stepEmulator(int steps)
@@ -221,8 +238,28 @@ void NukedSC55AudioProcessor::stepEmulatorForUi()
     if (!mRomsLoaded)
         return;
 
+    // Boot priming must complete regardless of DAW activity — it's
+    // initialization, not idle stepping. Do it before the DAW-active
+    // check so intermittent processBlock calls don't starve it.
+    if (mRemainingBootSteps > 0)
+    {
+        std::lock_guard<std::mutex> lock(mEmulatorMutex);
+
+        static constexpr int kUiBootStepsPerFrame = 50000;
+        const int steps = std::min(kUiBootStepsPerFrame, mRemainingBootSteps);
+        mRemainingBootSteps -= steps;
+        fprintf(stdout, "[Nuked SC-55] UI boot priming START: doing %d steps (%d remaining after)\n",
+                steps, mRemainingBootSteps);
+        fflush(stdout);
+        for (int i = 0; i < steps; ++i)
+            mEmulator.Step();
+        fprintf(stdout, "[Nuked SC-55] UI boot priming END: %d steps left\n", mRemainingBootSteps);
+        fflush(stdout);
+        return;
+    }
+
     // When the DAW is actively calling processBlock (within the last 50ms),
-    // skip stepping entirely.  This avoids both mutex contention (which
+    // skip idle stepping.  This avoids both mutex contention (which
     // glitches the audio thread) AND emulator over-advancement (which
     // causes audible instability like envelope/LFO timing errors).
     if (juce::Time::getMillisecondCounter() - mLastProcessBlockTimeMs.load(std::memory_order_relaxed) < 50)
@@ -231,8 +268,6 @@ void NukedSC55AudioProcessor::stepEmulatorForUi()
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
 
     // Light stepping to keep MIDI/mcu alive when DAW is idle.
-    // Boot priming is handled in processBlock (audio thread) to avoid
-    // UI→audio lock contention during the heavy 500k-step init.
     static constexpr int kIdleStepsPerFrame = 2000;
 
     for (int i = 0; i < kIdleStepsPerFrame; ++i)
@@ -441,6 +476,11 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
 
     if (static_cast<int>(err) != 0)
     {
+        fprintf(stdout, "[Nuked SC-55] LoadRomset FAILED: err=%d (%s), romset='%s', dir='%s'\n",
+                static_cast<int>(err), common::ToCString(err),
+                mDesiredRomset.empty() ? "(auto)" : mDesiredRomset.c_str(),
+                directory.c_str());
+        fflush(stdout);
         DBG("Nuked SC-55: LoadRomset failed: " + juce::String(common::ToCString(err)));
         mRomDirectory.clear();
         return false;
@@ -448,6 +488,9 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
 
     if (!mEmulator.LoadRoms(result.romset, mRomsetInfo, nullptr))
     {
+        fprintf(stdout, "[Nuked SC-55] Emulator::LoadRoms FAILED, romset=%d\n",
+                static_cast<int>(result.romset));
+        fflush(stdout);
         DBG("Nuked SC-55: Emulator::LoadRoms failed");
         return false;
     }
@@ -455,6 +498,10 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
     mLoadResult = result;
     mRomDirectory = directory;
     mRomsLoaded = true;
+
+    fprintf(stdout, "[Nuked SC-55] ROMs loaded OK: romset=%d, dir='%s'\n",
+            static_cast<int>(result.romset), directory.c_str());
+    fflush(stdout);
 
     mEmulator.Reset();
     mEmulator.StartLCD();
@@ -477,12 +524,14 @@ void NukedSC55AudioProcessor::setRomDirectory(const std::string& path)
 
 void NukedSC55AudioProcessor::switchRomset(const std::string& romsetName)
 {
-    // Just set the desired romset and mark ROMs unloaded. The actual reload
-    // happens in ensureEmulatorReady() (called from timerCallback) under the
-    // mutex. Calling loadROMsImpl here would race with ensureEmulatorReady.
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
     mDesiredRomset = romsetName;
     mRomsLoaded = false;
+    mForceReinit = true;  // force full emulator re-init to clear previous romset state
+    fprintf(stdout, "[Nuked SC-55] switchRomset: romset='%s', romDir='%s'\n",
+            romsetName.c_str(),
+            mRomDirectory.empty() ? "(empty)" : mRomDirectory.c_str());
+    fflush(stdout);
 }
 
 void NukedSC55AudioProcessor::triggerGsReset()
