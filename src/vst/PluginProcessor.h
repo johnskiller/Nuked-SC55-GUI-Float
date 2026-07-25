@@ -133,7 +133,7 @@ private:
 
     // Timestamp of the most recent processBlock call (millisecond counter).
     // Used by stepEmulatorForUi() to detect DAW activity and skip stepping.
-    juce::uint64 mLastProcessBlockTimeMs = 0;
+    std::atomic<uint32_t> mLastProcessBlockTimeMs{0};
 
     //==============================================================================
     static void sampleCallback(void* userdata, const AudioFrame<int32_t>& frame);

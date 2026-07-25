@@ -225,7 +225,7 @@ void NukedSC55AudioProcessor::stepEmulatorForUi()
     // skip stepping entirely.  This avoids both mutex contention (which
     // glitches the audio thread) AND emulator over-advancement (which
     // causes audible instability like envelope/LFO timing errors).
-    if (juce::Time::getMillisecondCounter() - mLastProcessBlockTimeMs < 50)
+    if (juce::Time::getMillisecondCounter() - mLastProcessBlockTimeMs.load(std::memory_order_relaxed) < 50)
         return;
 
     std::lock_guard<std::mutex> lock(mEmulatorMutex);
@@ -273,7 +273,8 @@ void NukedSC55AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         return;
 
     // Track last processBlock time so the UI timer knows the DAW is alive.
-    mLastProcessBlockTimeMs = juce::Time::getMillisecondCounter();
+    mLastProcessBlockTimeMs.store(juce::Time::getMillisecondCounter(),
+                                  std::memory_order_relaxed);
 
     // Process incoming MIDI
     for (const auto& metadata : midiMessages)
