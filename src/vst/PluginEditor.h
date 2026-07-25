@@ -21,6 +21,9 @@ public:
     void mouseDrag(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
     void mouseExit(const juce::MouseEvent& event) override;
+    void mouseMove(const juce::MouseEvent& event) override;
+
+    juce::MouseCursor getMouseCursor() override;
 
     //==============================================================================
     bool keyPressed(const juce::KeyPress& key) override;
@@ -58,6 +61,11 @@ private:
 
     void cacheKnobSprites();
     void loadBackgroundForCurrentRomset();
+
+    // Romset selection menu — unobtrusive corner trigger
+    juce::Rectangle<int> getRomsetMenuZone() const;
+    void showRomsetMenu();
+    bool mMenuHover = false;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NukedSC55AudioProcessorEditor)

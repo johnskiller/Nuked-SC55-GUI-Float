@@ -1,6 +1,7 @@
 #include "PluginEditor.h"
 #include "EmbeddedResources.h"
 #include "backend/lcd.h"
+#include "backend/rom.h"
 
 #include <atomic>
 #include <filesystem>
@@ -244,8 +245,73 @@ int NukedSC55AudioProcessorEditor::findButtonAt(int x, int y)
     return -1;
 }
 
+juce::Rectangle<int> NukedSC55AudioProcessorEditor::getRomsetMenuZone() const
+{
+    // Bottom-right corner hot zone — works for both SC-55 (1120×233) and
+    // JV-880 (1436×200) panel sizes. Kept clear of all button regions.
+    return getLocalBounds().removeFromBottom(30).removeFromRight(30);
+}
+
+void NukedSC55AudioProcessorEditor::showRomsetMenu()
+{
+    const auto& desired = mProcessor.getDesiredRomset();
+    const auto names = GetParsableRomsetNames();
+    auto* processor = &mProcessor;
+
+    juce::PopupMenu menu;
+
+    // Auto-detect — when active, show the detected romset in parentheses
+    juce::String autoLabel { "Auto-detect" };
+    if (desired.empty() && mProcessor.areRomsLoaded())
+    {
+        auto& mcu = mProcessor.getEmulator().GetMCU();
+        autoLabel << "  (" << RomsetName(mcu.romset) << ")";
+    }
+    menu.addItem(1, autoLabel, true, desired.empty());
+
+    menu.addSeparator();
+
+    // Individual romsets — tick the one matching the desired selection
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        const auto romset = static_cast<Romset>(i);
+        const int itemId = static_cast<int>(i + 2);
+        menu.addItem(itemId, RomsetName(romset), true, desired == names[i]);
+    }
+
+    // JUCE 8 disables modal loops in plugins — use the async API.
+    // The processor owns the editor, so the raw pointer is safe in the callback.
+    // `names` points to static data (rs_name_simple), valid for the program lifetime.
+    const auto screenZone = localAreaToGlobal(getRomsetMenuZone());
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenZone),
+        [processor, names](int chosen)
+        {
+            if (chosen == 0)
+                return;  // dismissed without selection
+
+            if (chosen == 1)
+            {
+                processor->switchRomset({});
+            }
+            else
+            {
+                const size_t idx = static_cast<size_t>(chosen - 2);
+                if (idx < names.size())
+                    processor->switchRomset(names[idx]);
+            }
+        });
+}
+
 void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
 {
+    // --- Romset menu trigger (bottom-right corner) ---
+    if (getRomsetMenuZone().contains(event.position.toInt()))
+    {
+        showRomsetMenu();
+        return;
+    }
+
     const float mx = event.position.x;
     const float my = event.position.y;
 
@@ -328,12 +394,30 @@ void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
 
 void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
 {
+    mMenuHover = false;
+
     if (mButtonsDown != 0)
     {
         mProcessor.getEmulator().GetMCU().button_pressed.fetch_and(~mButtonsDown);
         mButtonsDown = 0;
         repaint();
     }
+}
+
+void NukedSC55AudioProcessorEditor::mouseMove(const juce::MouseEvent& event)
+{
+    const bool inZone = getRomsetMenuZone().contains(event.position.toInt());
+    if (inZone != mMenuHover)
+    {
+        mMenuHover = inZone;
+        repaint();
+    }
+}
+
+juce::MouseCursor NukedSC55AudioProcessorEditor::getMouseCursor()
+{
+    return mMenuHover ? juce::MouseCursor::PointingHandCursor
+                      : juce::MouseCursor::NormalCursor;
 }
 
 //==============================================================================
@@ -710,6 +794,31 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
             g.setColour(juce::Colour(0xFFcccccc));
             g.drawMultiLineText(text, 290, 80, 355, juce::Justification::left);
         }
+    }
+
+    // 7. Romset menu indicator (bottom-right corner) — subtle three-dot
+    //    overflow glyph that brightens on hover. Drawn last so it's always
+    //    visible, even during the "No ROMs Loaded" state.
+    {
+        const auto zone = getRomsetMenuZone().toFloat().reduced(2.0f);
+
+        if (mMenuHover)
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.10f));
+            g.fillRoundedRectangle(zone, 5.0f);
+        }
+
+        const float alpha = mMenuHover ? 0.85f : 0.22f;
+        g.setColour(juce::Colours::white.withAlpha(alpha));
+
+        const float dotSize = 4.0f;
+        const float gap = 6.0f;
+        const float totalW = dotSize * 3.0f + gap * 2.0f;
+        const float startX = zone.getCentreX() - totalW * 0.5f;
+        const float y = zone.getCentreY() - dotSize * 0.5f;
+
+        for (int i = 0; i < 3; ++i)
+            g.fillEllipse(startX + i * (dotSize + gap), y, dotSize, dotSize);
     }
 }
 
