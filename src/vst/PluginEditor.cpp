@@ -326,10 +326,14 @@ void NukedSC55AudioProcessorEditor::showRomsetMenu()
 
     menu.addSeparator();
 
-    // Individual romsets — tick the one matching the desired selection
+    // Individual romsets — only show those with complete ROM files available.
+    // Tick the one matching the desired selection.
     for (size_t i = 0; i < names.size(); ++i)
     {
         const auto romset = static_cast<Romset>(i);
+        if (!mProcessor.isRomsetAvailable(romset))
+            continue;
+
         const int itemId = static_cast<int>(i + 2);
         menu.addItem(itemId, RomsetName(romset), true, desired == names[i]);
     }

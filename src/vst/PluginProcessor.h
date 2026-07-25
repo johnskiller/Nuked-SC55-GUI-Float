@@ -86,6 +86,9 @@ public:
     /// Get the user-selected romset name (empty = auto-detect).
     const std::string& getDesiredRomset() const { return mDesiredRomset; }
 
+    /// Returns true if the given romset has all required ROM files available.
+    bool isRomsetAvailable(Romset romset) const { return IsCompleteRomset(mRomsetInfo, romset); }
+
     /// Switch to a different romset. Triggers full ROM reload + boot.
     /// Pass empty string for auto-detect.
     void switchRomset(const std::string& romsetName);

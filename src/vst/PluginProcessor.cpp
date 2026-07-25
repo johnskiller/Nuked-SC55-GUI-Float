@@ -446,7 +446,17 @@ void NukedSC55AudioProcessor::setStateInformation(const void* data, int sizeInBy
     }
 
     if (xml->hasAttribute("romset"))
+    {
         mDesiredRomset = xml->getStringAttribute("romset").toStdString();
+        // The constructor may have already loaded ROMs with auto-detect
+        // before setStateInformation was called. If a specific romset was
+        // saved, force a full re-init to load the correct one.
+        if (mRomsLoaded && !mDesiredRomset.empty())
+        {
+            mForceReinit = true;
+            mRomsLoaded = false;
+        }
+    }
 
     ensureEmulatorReady();
 
