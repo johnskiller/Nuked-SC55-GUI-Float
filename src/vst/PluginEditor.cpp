@@ -45,6 +45,54 @@ static constexpr float kKnobDefAngle   = 4.18879f;    // 240° in radians
 static constexpr float kKnobAngleRange = kKnobMaxAngle - kKnobMinAngle;
 
 //==============================================================================
+// Keyboard mapping: matches SDL's button_map_sc55 / button_map_jv880
+struct KeyMapping { juce::KeyPress key; int bitIndex; };
+
+static const KeyMapping kSc55KeyMap[] = {
+    { juce::KeyPress('q', 0, 0),                     MCU_BUTTON_POWER },
+    { juce::KeyPress('w', 0, 0),                     MCU_BUTTON_INST_ALL },
+    { juce::KeyPress('e', 0, 0),                     MCU_BUTTON_INST_MUTE },
+    { juce::KeyPress('r', 0, 0),                     MCU_BUTTON_PART_L },
+    { juce::KeyPress('t', 0, 0),                     MCU_BUTTON_PART_R },
+    { juce::KeyPress('y', 0, 0),                     MCU_BUTTON_INST_L },
+    { juce::KeyPress('u', 0, 0),                     MCU_BUTTON_INST_R },
+    { juce::KeyPress('i', 0, 0),                     MCU_BUTTON_KEY_SHIFT_L },
+    { juce::KeyPress('o', 0, 0),                     MCU_BUTTON_KEY_SHIFT_R },
+    { juce::KeyPress('p', 0, 0),                     MCU_BUTTON_LEVEL_L },
+    { juce::KeyPress('[', 0, 0),                     MCU_BUTTON_LEVEL_R },
+    { juce::KeyPress('a', 0, 0),                     MCU_BUTTON_MIDI_CH_L },
+    { juce::KeyPress('s', 0, 0),                     MCU_BUTTON_MIDI_CH_R },
+    { juce::KeyPress('d', 0, 0),                     MCU_BUTTON_PAN_L },
+    { juce::KeyPress('f', 0, 0),                     MCU_BUTTON_PAN_R },
+    { juce::KeyPress('g', 0, 0),                     MCU_BUTTON_REVERB_L },
+    { juce::KeyPress('h', 0, 0),                     MCU_BUTTON_REVERB_R },
+    { juce::KeyPress('j', 0, 0),                     MCU_BUTTON_CHORUS_L },
+    { juce::KeyPress('k', 0, 0),                     MCU_BUTTON_CHORUS_R },
+    { juce::KeyPress(juce::KeyPress::leftKey, 0, 0),  MCU_BUTTON_PART_L },
+    { juce::KeyPress(juce::KeyPress::rightKey, 0, 0), MCU_BUTTON_PART_R },
+};
+
+static const KeyMapping kJv880KeyMap[] = {
+    { juce::KeyPress('p', 0, 0),                     MCU_BUTTON_PREVIEW },
+    { juce::KeyPress(juce::KeyPress::leftKey, 0, 0),  MCU_BUTTON_CURSOR_L },
+    { juce::KeyPress(juce::KeyPress::rightKey, 0, 0), MCU_BUTTON_CURSOR_R },
+    { juce::KeyPress(juce::KeyPress::tabKey, 0, 0),   MCU_BUTTON_DATA },
+    { juce::KeyPress('q', 0, 0),                     MCU_BUTTON_TONE_SELECT },
+    { juce::KeyPress('a', 0, 0),                     MCU_BUTTON_PATCH_PERFORM },
+    { juce::KeyPress('w', 0, 0),                     MCU_BUTTON_EDIT },
+    { juce::KeyPress('e', 0, 0),                     MCU_BUTTON_SYSTEM },
+    { juce::KeyPress('r', 0, 0),                     MCU_BUTTON_RHYTHM },
+    { juce::KeyPress('t', 0, 0),                     MCU_BUTTON_UTILITY },
+    { juce::KeyPress('s', 0, 0),                     MCU_BUTTON_MUTE },
+    { juce::KeyPress('d', 0, 0),                     MCU_BUTTON_MONITOR },
+    { juce::KeyPress('f', 0, 0),                     MCU_BUTTON_COMPARE },
+    { juce::KeyPress('g', 0, 0),                     MCU_BUTTON_ENTER },
+};
+
+constexpr auto kSc55KeyMapSize  = sizeof(kSc55KeyMap)  / sizeof(kSc55KeyMap[0]);
+constexpr auto kJv880KeyMapSize = sizeof(kJv880KeyMap) / sizeof(kJv880KeyMap[0]);
+
+//==============================================================================
 NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProcessor& p)
     : AudioProcessorEditor(&p), mProcessor(p)
 {
@@ -92,6 +140,10 @@ NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProce
 
     // Pre-cache the 1x knob sprite and strips
     cacheKnobSprites();
+
+    // Accept keyboard focus for hotkey support
+    setWantsKeyboardFocus(true);
+    grabKeyboardFocus();
 }
 
 NukedSC55AudioProcessorEditor::~NukedSC55AudioProcessorEditor()
@@ -204,6 +256,85 @@ void NukedSC55AudioProcessorEditor::mouseExit(const juce::MouseEvent&)
         mProcessor.stepEmulator(10000);
         repaint();
     }
+}
+
+//==============================================================================
+bool NukedSC55AudioProcessorEditor::keyPressed(const juce::KeyPress& key)
+{
+    if (!mProcessor.areRomsLoaded())
+        return false;
+
+    auto& mcu = mProcessor.getEmulator().GetMCU();
+
+    // Pick the key map matching the current romset
+    const KeyMapping* map;
+    int mapSize;
+    if (mcu.romset == Romset::JV880)
+    {
+        map     = kJv880KeyMap;
+        mapSize = kJv880KeyMapSize;
+    }
+    else
+    {
+        map     = kSc55KeyMap;
+        mapSize = kSc55KeyMapSize;
+    }
+
+    for (int i = 0; i < mapSize; ++i)
+    {
+        if (key == map[i].key)
+        {
+            const uint32_t bit = 1u << map[i].bitIndex;
+
+            // Ignore key repeat (bit already set from a previous press)
+            if (!(mKeyboardBits & bit))
+            {
+                mKeyboardBits |= bit;
+                mcu.button_pressed.fetch_or(bit);
+                mProcessor.stepEmulator(10000);
+                repaint();
+            }
+            return true;
+        }
+    }
+
+    // JV-880 encoder keys (separate MCU API, not button_pressed bits)
+    if (mcu.romset == Romset::JV880)
+    {
+        if (key == juce::KeyPress(',', 0, 0))
+        {
+            MCU_EncoderTrigger(mcu, 0);
+            return true;
+        }
+        if (key == juce::KeyPress('.', 0, 0))
+        {
+            MCU_EncoderTrigger(mcu, 1);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool NukedSC55AudioProcessorEditor::keyStateChanged(bool isKeyDown)
+{
+    if (!isKeyDown && mKeyboardBits != 0 && mProcessor.areRomsLoaded())
+    {
+        auto& mcu = mProcessor.getEmulator().GetMCU();
+        mcu.button_pressed.fetch_and(~mKeyboardBits);
+        mKeyboardBits = 0;
+        mProcessor.stepEmulator(10000);
+        repaint();
+    }
+    return false;
+}
+
+void NukedSC55AudioProcessorEditor::focusGained(FocusChangeType)
+{
+}
+
+void NukedSC55AudioProcessorEditor::focusLost(FocusChangeType)
+{
 }
 
 //==============================================================================

@@ -22,6 +22,12 @@ public:
     void mouseUp(const juce::MouseEvent& event) override;
     void mouseExit(const juce::MouseEvent& event) override;
 
+    //==============================================================================
+    bool keyPressed(const juce::KeyPress& key) override;
+    bool keyStateChanged(bool isKeyDown) override;
+    void focusGained(FocusChangeType cause) override;
+    void focusLost(FocusChangeType cause) override;
+
 private:
     //==============================================================================
     void timerCallback() override;
@@ -40,6 +46,9 @@ private:
     // Volume knob state
     float mKnobAngle = 4.18879f;         // 240° (SDL default), 0 = top, CW+
     bool  mKnobDragging = false;
+
+    // Keyboard-pressed button bits (tracked separately from mouse for clean release)
+    uint32_t mKeyboardBits = 0;
 
     // Cached 1x knob sprite and gap-filling strips (created once from mBackgroundFull)
     juce::Image mKnobSprite;
