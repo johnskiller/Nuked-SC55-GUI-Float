@@ -389,6 +389,7 @@ void NukedSC55AudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto xml = std::make_unique<juce::XmlElement>("NukedSC55");
 
     xml->setAttribute("romDirectory", mRomDirectory);
+    xml->setAttribute("romset", mDesiredRomset);
 
     if (mGainParam != nullptr)
         xml->setAttribute("gain", (double)mGainParam->get());
@@ -408,6 +409,9 @@ void NukedSC55AudioProcessor::setStateInformation(const void* data, int sizeInBy
         const auto dir = xml->getStringAttribute("romDirectory").toStdString();
         mRomDirectory = dir;
     }
+
+    if (xml->hasAttribute("romset"))
+        mDesiredRomset = xml->getStringAttribute("romset").toStdString();
 
     ensureEmulatorReady();
 
@@ -433,7 +437,7 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
     common::RomOverrides overrides{};
     common::LoadRomsetResult result;
 
-    const auto err = common::LoadRomset(mRomsetInfo, directory, "", false, overrides, result);
+    const auto err = common::LoadRomset(mRomsetInfo, directory, mDesiredRomset, false, overrides, result);
 
     if (static_cast<int>(err) != 0)
     {
@@ -469,6 +473,19 @@ void NukedSC55AudioProcessor::setRomDirectory(const std::string& path)
     mRomsLoaded   = false;
 
     ensureEmulatorReady();
+}
+
+void NukedSC55AudioProcessor::switchRomset(const std::string& romsetName)
+{
+    {
+        std::lock_guard<std::mutex> lock(mEmulatorMutex);
+        mDesiredRomset = romsetName;
+        mRomsLoaded = false;
+    }
+
+    // Reload ROMs with the new desired romset
+    if (!mRomDirectory.empty())
+        loadROMsImpl(mRomDirectory);
 }
 
 void NukedSC55AudioProcessor::triggerGsReset()

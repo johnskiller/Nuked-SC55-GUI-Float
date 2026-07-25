@@ -41,6 +41,8 @@ private:
     juce::Image mBackgroundFull;  // full 2x BMP (2240×588) for sprite access
     juce::Image mLcdImage;
 
+    int mCurrentRomset = -1;  // -1 = unknown, tracks Romset enum value
+
     uint32_t mButtonsDown = 0;
 
     // Volume knob state
@@ -55,6 +57,7 @@ private:
     juce::Image mKnobStripTop, mKnobStripBot, mKnobStripLeft, mKnobStripRight;
 
     void cacheKnobSprites();
+    void loadBackgroundForCurrentRomset();
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NukedSC55AudioProcessorEditor)

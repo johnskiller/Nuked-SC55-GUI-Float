@@ -83,6 +83,13 @@ public:
     const std::vector<std::string>& getSearchedPaths() const { return mSearchedPaths; }
     void               setRomDirectory(const std::string& path);
 
+    /// Get the user-selected romset name (empty = auto-detect).
+    const std::string& getDesiredRomset() const { return mDesiredRomset; }
+
+    /// Switch to a different romset. Triggers full ROM reload + boot.
+    /// Pass empty string for auto-detect.
+    void switchRomset(const std::string& romsetName);
+
     // Trigger resets via MIDI SysEx
     void triggerGsReset();
     void triggerGmReset();
@@ -109,6 +116,7 @@ private:
     // ROM loading
     //==============================================================================
     std::string                mRomDirectory;
+    std::string                mDesiredRomset;  // empty = auto-detect; otherwise e.g. "mk2", "jv880", "mk1"
     std::vector<std::string>   mSearchedPaths;
     AllRomsetInfo              mRomsetInfo;
     common::LoadRomsetResult   mLoadResult;

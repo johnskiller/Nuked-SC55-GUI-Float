@@ -97,67 +97,13 @@ constexpr auto kJv880KeyMapSize = sizeof(kJv880KeyMap) / sizeof(kJv880KeyMap[0])
 NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProcessor& p)
     : AudioProcessorEditor(&p), mProcessor(p)
 {
-    // Load the 2x background PNG.
-    // Priority: sc55_background.png in the ROM directory, then embedded fallback.
-    // Both sources are 2240×588, so all sprite coordinates stay identical.
-    juce::Image rawBg;
-    std::string bgSource;  // for debug log
-
-    {
-        const auto& romDir = mProcessor.getRomDirectory();
-        fprintf(stdout, "[Nuked SC-55] ROM directory: %s\n",
-                romDir.empty() ? "(not set)" : romDir.c_str());
-        fflush(stdout);
-
-        if (!romDir.empty())
-        {
-            auto pngPath = std::filesystem::path(romDir) / "sc55_background.png";
-            if (std::filesystem::exists(pngPath))
-            {
-                rawBg = juce::ImageFileFormat::loadFrom(juce::File(pngPath.string()));
-                if (rawBg.isValid())
-                    bgSource = pngPath.string();
-            }
-        }
-    }
-
-    if (!rawBg.isValid())
-    {
-        juce::MemoryInputStream bgStream(
-            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png,
-            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png_len,
-            false);
-        rawBg = juce::ImageFileFormat::loadFrom(bgStream);
-        bgSource = "embedded fallback";
-    }
-
-    fprintf(stdout, "[Nuked SC-55] Background loaded from: %s\n", bgSource.c_str());
-    fflush(stdout);
-
-    if (rawBg.isValid())
-    {
-        // Keep the full 2x BMP (2240×588) for sprite access (badge, LEDs).
-        // The bottom rows (466+) contain sprite sheets for model badges and lights.
-        mBackgroundFull = rawBg;
-
-        // Crop to panel area (top 2240×466), then scale down to 1x (1120×233).
-        auto panel = rawBg.getClippedImage(juce::Rectangle<int>(0, 0, 2240, 466));
-        mBackground = panel.rescaled(1120, 233, juce::Graphics::highResamplingQuality);
-    }
-    else
-    {
-        // Fallback: solid dark background with LCD placeholder
-        mBackground = juce::Image(juce::Image::RGB, 1120, 233, true);
-        juce::Graphics g(mBackground);
-        g.fillAll(juce::Colour(0xFF1a1a1a));
-
-        g.setColour(juce::Colours::white);
-        g.setFont(14.0f);
-        g.drawText("Nuked SC-55", mBackground.getBounds(), juce::Justification::centred, true);
-
-        g.setColour(juce::Colour(0xFF0f6fff));
-        g.fillRect(283, 49, 370, 134);
-    }
+    // Background will be loaded when romset is detected (see timerCallback)
+    mBackground = juce::Image(juce::Image::RGB, 1120, 233, true);
+    juce::Graphics g(mBackground);
+    g.fillAll(juce::Colour(0xFF1a1a1a));
+    g.setColour(juce::Colours::white);
+    g.setFont(14.0f);
+    g.drawText("Loading...", mBackground.getBounds(), juce::Justification::centred, true);
 
     // Create initial LCD pixel buffer image (will be resized when emulator LCD is available)
     mLcdImage = juce::Image(juce::Image::ARGB, 741, 268, true);
@@ -175,6 +121,111 @@ NukedSC55AudioProcessorEditor::NukedSC55AudioProcessorEditor(NukedSC55AudioProce
     // Accept keyboard focus for hotkey support
     setWantsKeyboardFocus(true);
     grabKeyboardFocus();
+}
+
+void NukedSC55AudioProcessorEditor::loadBackgroundForCurrentRomset()
+{
+    if (!mProcessor.areRomsLoaded())
+        return;
+
+    auto& mcu = mProcessor.getEmulator().GetMCU();
+    const int newRomset = static_cast<int>(mcu.romset);
+
+    // Already loaded for this romset
+    if (newRomset == mCurrentRomset)
+        return;
+
+    const bool isFirstLoad = (mCurrentRomset == -1);
+    mCurrentRomset = newRomset;
+
+    // JV-880 has its own background; all other romsets use the SC-55 background.
+    const bool isJv880 = (mcu.romset == Romset::JV880);
+
+    // Log ROM directory once, on the first load.
+    const auto& romDir = mProcessor.getRomDirectory();
+    if (isFirstLoad)
+    {
+        fprintf(stdout, "[Nuked SC-55] ROM directory: %s\n",
+                romDir.empty() ? "(not set)" : romDir.c_str());
+        fflush(stdout);
+    }
+
+    // Load the 2x background PNG from the ROM directory.
+    // Priority: <romset>_background.png in the ROM directory, then embedded fallback.
+    // Only SC-55 has an embedded fallback; if the JV-880 file is missing, fall back
+    // to the SC-55 embedded image.
+    juce::Image rawBg;
+    std::string bgSource;
+
+    const char* bgFilename = isJv880 ? "jv880_background.png" : "sc55_background.png";
+
+    if (!romDir.empty())
+    {
+        auto pngPath = std::filesystem::path(romDir) / bgFilename;
+        if (std::filesystem::exists(pngPath))
+        {
+            rawBg = juce::ImageFileFormat::loadFrom(juce::File(pngPath.string()));
+            if (rawBg.isValid())
+                bgSource = pngPath.string();
+        }
+    }
+
+    if (!rawBg.isValid())
+    {
+        juce::MemoryInputStream bgStream(
+            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png,
+            _Users_john_Projects_Nuked_SC55_GUI_Float_data_sc55_background_png_len,
+            false);
+        rawBg = juce::ImageFileFormat::loadFrom(bgStream);
+        bgSource = isJv880 ? "embedded SC-55 fallback (JV-880 file not found)"
+                           : "embedded fallback";
+    }
+
+    fprintf(stdout, "[Nuked SC-55] Background loaded from: %s\n", bgSource.c_str());
+    fflush(stdout);
+
+    if (rawBg.isValid())
+    {
+        // Keep the full 2x image for sprite access (badge, LEDs).
+        mBackgroundFull = rawBg;
+
+        if (isJv880)
+        {
+            // JV-880: the full image IS the panel (2872×400, no sprite sheet rows).
+            // Scale down to 1x (1436×200).
+            mBackground = rawBg.rescaled(1436, 200, juce::Graphics::highResamplingQuality);
+            setSize(1436, 200);
+        }
+        else
+        {
+            // SC-55: crop panel area (top 2240×466), then scale to 1x (1120×233).
+            // The bottom rows (466+) contain sprite sheets for model badges and lights.
+            auto panel = rawBg.getClippedImage(juce::Rectangle<int>(0, 0, 2240, 466));
+            mBackground = panel.rescaled(1120, 233, juce::Graphics::highResamplingQuality);
+            setSize(1120, 233);
+        }
+    }
+    else
+    {
+        // Fallback: solid dark background with "Nuked SC-55" text
+        mBackground = juce::Image(juce::Image::RGB, 1120, 233, true);
+        juce::Graphics g(mBackground);
+        g.fillAll(juce::Colour(0xFF1a1a1a));
+
+        g.setColour(juce::Colours::white);
+        g.setFont(14.0f);
+        g.drawText("Nuked SC-55", mBackground.getBounds(), juce::Justification::centred, true);
+
+        g.setColour(juce::Colour(0xFF0f6fff));
+        g.fillRect(283, 49, 370, 134);
+
+        setSize(1120, 233);
+    }
+
+    // Rebuild the sprite cache for the newly loaded background.
+    cacheKnobSprites();
+
+    repaint();
 }
 
 NukedSC55AudioProcessorEditor::~NukedSC55AudioProcessorEditor()
@@ -366,6 +417,10 @@ void NukedSC55AudioProcessorEditor::focusLost(FocusChangeType)
 void NukedSC55AudioProcessorEditor::timerCallback()
 {
     mProcessor.ensureEmulatorReady();
+
+    // Check if romset changed and reload background if needed
+    if (mProcessor.areRomsLoaded())
+        loadBackgroundForCurrentRomset();
 
     if (!mProcessor.areRomsLoaded())
         return;
