@@ -39,12 +39,38 @@ static constexpr ButtonRegion kButtonRegions[] = {
 
 constexpr auto kNumButtons = sizeof(kButtonRegions) / sizeof(kButtonRegions[0]);
 
+// JV-880 button regions — 1x panel coordinates (1436×200).
+// The `bit` field is the MCU_BUTTON_* index (matches the array position).
+static constexpr ButtonRegion kButtonRegionsJv880[] = {
+    { 660, 129, 75, 25,  0 }, // CURSOR_L
+    { 742, 129, 75, 25,  1 }, // CURSOR_R
+    { 853, 129, 75, 25,  2 }, // TONE_SELECT
+    { 976, 129, 75, 25,  3 }, // MUTE
+    { 700,  34, 75, 75,  4 }, // DATA
+    {1056, 129, 75, 25,  5 }, // MONITOR
+    {1136, 129, 75, 25,  6 }, // COMPARE
+    {1216, 129, 75, 25,  7 }, // ENTER
+    {1216,  53, 75, 25,  8 }, // UTILITY
+    {  25,  86, 60, 60,  9 }, // PREVIEW
+    { 853,  53, 75, 25, 10 }, // PATCH_PERFORM
+    { 976,  53, 75, 25, 11 }, // EDIT
+    {1056,  53, 75, 25, 12 }, // SYSTEM
+    {1136,  53, 75, 25, 13 }, // RHYTHM
+};
+
+constexpr auto kNumButtonsJv880 = sizeof(kButtonRegionsJv880) / sizeof(kButtonRegionsJv880[0]);
+
 // Volume knob geometry and limits
-static const juce::Rectangle<int> kKnobBounds{ 153, 42, 59, 59 };
+static const juce::Rectangle<int> kKnobBounds     { 153, 42, 59, 59 };  // SC-55
+static const juce::Rectangle<int> kKnobBoundsJv880{  23, 86, 59, 59 };  // JV-880
 static constexpr float kKnobMinAngle   = 0.523599f;   //  30° in radians
 static constexpr float kKnobMaxAngle   = 5.75959f;    // 330° in radians
 static constexpr float kKnobDefAngle   = 4.18879f;    // 240° in radians
 static constexpr float kKnobAngleRange = kKnobMaxAngle - kKnobMinAngle;
+
+// LCD screen area on the panel (1x coordinates)
+static const juce::Rectangle<int> kLcdBounds     { 283, 49, 370, 134 };  // SC-55
+static const juce::Rectangle<int> kLcdBoundsJv880{ 174, 83, 410,  50 };  // JV-880
 
 //==============================================================================
 // Keyboard mapping: matches SDL's button_map_sc55 / button_map_jv880
@@ -192,9 +218,11 @@ void NukedSC55AudioProcessorEditor::loadBackgroundForCurrentRomset()
 
         if (isJv880)
         {
-            // JV-880: the full image IS the panel (2872×400, no sprite sheet rows).
-            // Scale down to 1x (1436×200).
-            mBackground = rawBg.rescaled(1436, 200, juce::Graphics::highResamplingQuality);
+            // JV-880: the panel is the top 2872×400 (2x); sprite sheet rows for
+            // the button LEDs live below it (y=400+). Crop the panel first so the
+            // sprite rows aren't squashed into the displayed background.
+            auto panel = rawBg.getClippedImage(juce::Rectangle<int>(0, 0, 2872, 400));
+            mBackground = panel.rescaled(1436, 200, juce::Graphics::highResamplingQuality);
             setSize(1436, 200);
         }
         else
@@ -235,10 +263,33 @@ NukedSC55AudioProcessorEditor::~NukedSC55AudioProcessorEditor()
 }
 
 //==============================================================================
+bool NukedSC55AudioProcessorEditor::isJv880Romset() const
+{
+    if (mProcessor.areRomsLoaded())
+        return mProcessor.getEmulator().GetMCU().romset == Romset::JV880;
+    // Fall back to the last-detected romset so geometry stays correct during
+    // the brief unload/reload window when switching romsets.
+    return mCurrentRomset == static_cast<int>(Romset::JV880);
+}
+
+juce::Rectangle<int> NukedSC55AudioProcessorEditor::getKnobBounds() const
+{
+    return isJv880Romset() ? kKnobBoundsJv880 : kKnobBounds;
+}
+
+juce::Rectangle<int> NukedSC55AudioProcessorEditor::getLcdBounds() const
+{
+    return isJv880Romset() ? kLcdBoundsJv880 : kLcdBounds;
+}
+
 int NukedSC55AudioProcessorEditor::findButtonAt(int x, int y)
 {
-    for (const auto& reg : kButtonRegions)
+    const ButtonRegion* regions = isJv880Romset() ? kButtonRegionsJv880 : kButtonRegions;
+    const size_t count = isJv880Romset() ? kNumButtonsJv880 : kNumButtons;
+
+    for (size_t i = 0; i < count; ++i)
     {
+        const auto& reg = regions[i];
         if (x >= reg.x && x < reg.x + reg.w && y >= reg.y && y < reg.y + reg.h)
             return reg.bit;
     }
@@ -316,7 +367,8 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
     const float my = event.position.y;
 
     // --- Volume knob takes priority ---
-    if (kKnobBounds.contains(mx, my))
+    const auto knob = getKnobBounds();
+    if (knob.contains(mx, my))
     {
         mKnobDragging = true;
 
@@ -330,8 +382,8 @@ void NukedSC55AudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
         }
 
         // Absolute positioning: compute angle from mouse position
-        const float cx = kKnobBounds.getCentreX();
-        const float cy = kKnobBounds.getCentreY();
+        const float cx = knob.getCentreX();
+        const float cy = knob.getCentreY();
         float raw = std::atan2(my - cy, mx - cx);   // 0 = right, CCW+
         raw += 4.71239f;                              // shift so 0 = top (12 o'clock)
         if (raw < 0.0f)      raw += 6.28318f;
@@ -359,8 +411,9 @@ void NukedSC55AudioProcessorEditor::mouseDrag(const juce::MouseEvent& event)
     if (!mKnobDragging)
         return;
 
-    const float cx = kKnobBounds.getCentreX();
-    const float cy = kKnobBounds.getCentreY();
+    const auto knob = getKnobBounds();
+    const float cx = knob.getCentreX();
+    const float cy = knob.getCentreY();
     float raw = std::atan2(event.position.y - cy, event.position.x - cx);
     raw += 4.71239f;                              // 0 → top (12 o'clock)
     if (raw < 0.0f)      raw += 6.28318f;
@@ -563,7 +616,10 @@ void NukedSC55AudioProcessorEditor::cacheKnobSprites()
     if (!mBackgroundFull.isValid())
         return;
 
-    const auto& b = kKnobBounds;
+    // Romset-correct knob geometry (falls back to SC-55 when ROMs aren't
+    // loaded yet; cacheKnobSprites() is also called from the constructor,
+    // but the early return above guards that case).
+    const auto b = getKnobBounds();
     constexpr float sin45 = 0.7071067811865476f;
     const int s = b.getHeight() - static_cast<int>(std::floor(b.getHeight() * sin45));
 
@@ -663,12 +719,61 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
             if ((buttonEnable & 4) != 0) // STANDBY
                 g.drawImage(mBackgroundFull, 118, 42, 10, 10, 0, 518, 20, 20);
         }
+        else if (mcu.romset == Romset::JV880)
+        {
+            const uint32_t buttonEnable = lcd.button_enable.load();
+
+            // Sprite sheet (2x) layout for JV-880: button LED tiles start at
+            // y=400 (unlit) / y=450 (lit), each 150×50. The panel occupies the
+            // top 2872×400. mBackgroundFull holds the full 2x image.
+            //
+            // button_enable bit → button region mapping (matches SDL frontend):
+            //   bit 0 (1):   MIDI Message LED (drawn separately, top-right)
+            //   bit 1 (2):   EDIT
+            //   bit 2 (4):   SYSTEM
+            //   bit 3 (8):   RHYTHM
+            //   bit 4 (16):  UTILITY
+            //   bit 5 (32):  PATCH_PERFORM
+            //   bit 6 (64):  MUTE
+            //   bit 7 (128): MONITOR
+            //   bit 8 (256): COMPARE
+            //   bit 9 (512): ENTER
+
+            // MIDI Message LED: source {150, 400|408, 40, 8} → dest {1355, 26, 20, 4}
+            {
+                const int sy = 400 + 8 * static_cast<int>((buttonEnable & 1) != 0);
+                g.drawImage(mBackgroundFull, 1355, 26, 20, 4, 150, sy, 40, 8);
+            }
+
+            // 9 button LEDs — each drawn from the 150×50 (2x) tile scaled to the
+            // button region (75×25 at 1x). Unlit (y=400) and lit (y=450) states
+            // are always drawn so the LED appearance matches the hardware.
+            struct Jv880Led { uint32_t bit; int regionIdx; };
+            static constexpr Jv880Led jv880Leds[] = {
+                {   2u, MCU_BUTTON_EDIT          },
+                {   4u, MCU_BUTTON_SYSTEM        },
+                {   8u, MCU_BUTTON_RHYTHM        },
+                {  16u, MCU_BUTTON_UTILITY       },
+                {  32u, MCU_BUTTON_PATCH_PERFORM },
+                {  64u, MCU_BUTTON_MUTE          },
+                { 128u, MCU_BUTTON_MONITOR       },
+                { 256u, MCU_BUTTON_COMPARE       },
+                { 512u, MCU_BUTTON_ENTER         },
+            };
+
+            for (const auto& led : jv880Leds)
+            {
+                const int sy = 400 + 50 * static_cast<int>((buttonEnable & led.bit) != 0);
+                const auto& r = kButtonRegionsJv880[led.regionIdx];
+                g.drawImage(mBackgroundFull, r.x, r.y, r.w, r.h, 0, sy, 150, 50);
+            }
+        }
     }
 
     // 3. Draw the volume knob from the background sprite (matches SDL LCD_DrawKnob)
     if (mKnobSprite.isValid())
     {
-        const auto& b = kKnobBounds;
+        const auto b = getKnobBounds();
 
         // --- Main rotated knob sprite ---
         // SDL_RenderCopyEx rotates CW by RAD2DEG(angle) with SDL_FLIP_VERTICAL.
@@ -701,8 +806,9 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
     else
     {
         // Fallback: simple knob when background image is not available
-        const float cx = static_cast<float>(kKnobBounds.getCentreX());
-        const float cy = static_cast<float>(kKnobBounds.getCentreY());
+        const auto knobBounds = getKnobBounds();
+        const float cx = static_cast<float>(knobBounds.getCentreX());
+        const float cy = static_cast<float>(knobBounds.getCentreY());
         const float radius = 26.0f;
         const float indicatorLen = 18.0f;
 
@@ -766,21 +872,27 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
     //    (drawn last so it renders on top of the panel, like the standard frontend)
     if (mProcessor.isInitialized() && mLcdImage.getWidth() > 1 && mLcdImage.getHeight() > 1)
     {
+        const auto lcdBounds = getLcdBounds();
         g.drawImage(mLcdImage,
-                    283, 49, 370, 134,                                    // destination (on-panel LCD area)
-                    0, 0, mLcdImage.getWidth(), mLcdImage.getHeight());   // source (full LCD buffer)
+                    lcdBounds.getX(), lcdBounds.getY(), lcdBounds.getWidth(), lcdBounds.getHeight(), // destination (on-panel LCD area)
+                    0, 0, mLcdImage.getWidth(), mLcdImage.getHeight());                              // source (full LCD buffer)
     }
 
     // 6. If ROMs aren't loaded yet, overlay a message on the LCD area
     if (!mProcessor.areRomsLoaded())
     {
+        const auto lcdBounds = getLcdBounds();
+        const int lx = lcdBounds.getX();
+        const int ly = lcdBounds.getY();
+        const int lw = lcdBounds.getWidth();
+
         // Semi-transparent dark overlay over the LCD
         g.setColour(juce::Colours::black.withAlpha(0.85f));
-        g.fillRect(283, 49, 370, 134);
+        g.fillRect(lcdBounds);
 
         g.setColour(juce::Colours::white);
         g.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
-        g.drawText("No ROMs Loaded", 283, 52, 370, 22, juce::Justification::centred, true);
+        g.drawText("No ROMs Loaded", lx, ly + 3, lw, 22, juce::Justification::centred, true);
 
         // Build search-paths text from the auto-discovery results
         const auto& paths = mProcessor.getSearchedPaths();
@@ -792,7 +904,7 @@ void NukedSC55AudioProcessorEditor::paint(juce::Graphics& g)
 
             g.setFont(juce::Font(juce::FontOptions(9.0f)));
             g.setColour(juce::Colour(0xFFcccccc));
-            g.drawMultiLineText(text, 290, 80, 355, juce::Justification::left);
+            g.drawMultiLineText(text, lx + 7, ly + 31, lw - 15, juce::Justification::left);
         }
     }
 

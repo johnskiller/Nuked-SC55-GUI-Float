@@ -35,8 +35,13 @@ private:
     //==============================================================================
     void timerCallback() override;
 
-    static int findButtonAt(int x, int y);
+    int findButtonAt(int x, int y);
     void updateVolumeFromKnob();
+
+    // Romset-aware geometry helpers
+    bool isJv880Romset() const;
+    juce::Rectangle<int> getKnobBounds() const;
+    juce::Rectangle<int> getLcdBounds() const;
 
     NukedSC55AudioProcessor& mProcessor;
 
