@@ -190,6 +190,7 @@ void NukedSC55AudioProcessor::ensureEmulatorReady()
         EMU_Options opts{};
         opts.lcd_backend   = &mLcdBackend;
         opts.rom_directory = mRomDirectory;
+        opts.nvram_filename = std::filesystem::path(mRomDirectory) / "jv880_nvram.bin";
 
         if (!mEmulator.Init(opts))
         {
