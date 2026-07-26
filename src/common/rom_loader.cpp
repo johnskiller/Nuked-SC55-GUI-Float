@@ -45,7 +45,12 @@ LoadRomsetError LoadRomset(AllRomsetInfo&               romset_info,
 
         // When the user specifies a romset, we can speed up the loading process a bit.
         RomLocationSet desired{};
-        desired[(size_t)result.romset] = true;
+        // Iterate all RomLocation values: the caller knows the romset, so tell
+        // the detector to pre-load every location that this romset may use.
+        // Checking each location across the whole space is cheap and avoids
+        // the type mix-up of indexing a RomLocationSet with a Romset value.
+        for (size_t loc = 0; loc < desired.size(); ++loc)
+            desired[loc] = true;
 
         if (legacy_loader)
         {
