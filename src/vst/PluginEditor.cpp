@@ -551,9 +551,13 @@ void NukedSC55AudioProcessorEditor::updateVolumeFromKnob()
     float norm = (mKnobAngle - kKnobMinAngle) / kKnobAngleRange; // 0..1
     norm = std::max(0.0f, std::min(1.0f, norm));
 
-    auto& vol = mProcessor.getVolumeControl();
-    vol.volume   = norm;
-    vol.volume_fp = static_cast<uint32_t>(norm * 65535.0f);
+    // Exponential volume curve matching SDL frontend (lcd_sdl.cpp LCD_VolumeChanged):
+    // -80dB → 0dB, so perceived loudness scales linearly with knob rotation.
+    float vol = (norm > 0.0f) ? std::pow(10.0f, (-80.0f * (1.0f - norm)) / 20.0f) : 0.0f;
+
+    auto& vc = mProcessor.getVolumeControl();
+    vc.volume     = vol;
+    vc.volume_fp  = static_cast<uint32_t>(vol * 65535.0f);
 }
 
 void NukedSC55AudioProcessorEditor::mouseUp(const juce::MouseEvent&)
