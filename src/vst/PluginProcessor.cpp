@@ -488,6 +488,23 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
 
     mRomsetInfo = {};
     common::RomOverrides overrides{};
+
+    // Auto-detect expansion/card ROMs in the ROM directory (like legacy path).
+    // This ensures the firmware detects the expansion hardware at boot,
+    // enabling hot-swap of waverom data later without re-init.
+    if (mCardRomPath.empty())
+    {
+        auto cardPath = std::filesystem::path(directory) / "jv880_waverom_pcmcard.bin";
+        if (std::filesystem::exists(cardPath))
+            mCardRomPath = cardPath.string();
+    }
+    if (mExpRomPath.empty())
+    {
+        auto expPath = std::filesystem::path(directory) / "jv880_waverom_expansion.bin";
+        if (std::filesystem::exists(expPath))
+            mExpRomPath = expPath.string();
+    }
+
     if (!mCardRomPath.empty())
         overrides[(size_t)RomLocation::WAVEROM_CARD] = mCardRomPath;
     if (!mExpRomPath.empty())
