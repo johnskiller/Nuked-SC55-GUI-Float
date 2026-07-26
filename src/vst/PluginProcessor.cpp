@@ -425,6 +425,8 @@ void NukedSC55AudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 
     xml->setAttribute("romDirectory", mRomDirectory);
     xml->setAttribute("romset", mDesiredRomset);
+    xml->setAttribute("cardRomPath", mCardRomPath);
+    xml->setAttribute("expRomPath", mExpRomPath);
 
     if (mGainParam != nullptr)
         xml->setAttribute("gain", (double)mGainParam->get());
@@ -458,6 +460,12 @@ void NukedSC55AudioProcessor::setStateInformation(const void* data, int sizeInBy
         }
     }
 
+    if (xml->hasAttribute("cardRomPath"))
+        mCardRomPath = xml->getStringAttribute("cardRomPath").toStdString();
+
+    if (xml->hasAttribute("expRomPath"))
+        mExpRomPath = xml->getStringAttribute("expRomPath").toStdString();
+
     ensureEmulatorReady();
 
     // Restore gain
@@ -480,6 +488,10 @@ bool NukedSC55AudioProcessor::loadROMsImpl(const std::string& directory)
 
     mRomsetInfo = {};
     common::RomOverrides overrides{};
+    if (!mCardRomPath.empty())
+        overrides[(size_t)RomLocation::WAVEROM_CARD] = mCardRomPath;
+    if (!mExpRomPath.empty())
+        overrides[(size_t)RomLocation::WAVEROM_EXP] = mExpRomPath;
     common::LoadRomsetResult result;
 
     const auto err = common::LoadRomset(mRomsetInfo, directory, mDesiredRomset, false, overrides, result);
@@ -541,6 +553,46 @@ void NukedSC55AudioProcessor::switchRomset(const std::string& romsetName)
     fprintf(stdout, "[Nuked SC-55] switchRomset: romset='%s', romDir='%s'\n",
             romsetName.c_str(),
             mRomDirectory.empty() ? "(empty)" : mRomDirectory.c_str());
+    fflush(stdout);
+}
+
+void NukedSC55AudioProcessor::loadCardRom(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+    mCardRomPath = path;
+    mRomsLoaded = false;
+    mForceReinit = true;
+    fprintf(stdout, "[Nuked SC-55] loadCardRom: '%s'\n", path.c_str());
+    fflush(stdout);
+}
+
+void NukedSC55AudioProcessor::loadExpRom(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+    mExpRomPath = path;
+    mRomsLoaded = false;
+    mForceReinit = true;
+    fprintf(stdout, "[Nuked SC-55] loadExpRom: '%s'\n", path.c_str());
+    fflush(stdout);
+}
+
+void NukedSC55AudioProcessor::ejectCardRom()
+{
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+    mCardRomPath.clear();
+    mRomsLoaded = false;
+    mForceReinit = true;
+    fprintf(stdout, "[Nuked SC-55] ejectCardRom\n");
+    fflush(stdout);
+}
+
+void NukedSC55AudioProcessor::ejectExpRom()
+{
+    std::lock_guard<std::mutex> lock(mEmulatorMutex);
+    mExpRomPath.clear();
+    mRomsLoaded = false;
+    mForceReinit = true;
+    fprintf(stdout, "[Nuked SC-55] ejectExpRom\n");
     fflush(stdout);
 }
 

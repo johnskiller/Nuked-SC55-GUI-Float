@@ -75,7 +75,11 @@ private:
     // Romset selection menu — unobtrusive corner trigger
     juce::Rectangle<int> getRomsetMenuZone() const;
     void showRomsetMenu();
+    void launchExpFileChooser(bool isExpansionBoard);
     bool mMenuHover = false;
+
+    // Expansion card file chooser (kept alive during async dialog)
+    std::shared_ptr<juce::FileChooser> mExpFileChooser;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NukedSC55AudioProcessorEditor)

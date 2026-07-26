@@ -343,22 +343,97 @@ void NukedSC55AudioProcessorEditor::showRomsetMenu()
     // `names` points to static data (rs_name_simple), valid for the program lifetime.
     const auto screenZone = localAreaToGlobal(getRomsetMenuZone());
 
+    // Expansion card submenu (JV-880 only)
+    if (isJv880Romset())
+    {
+        menu.addSeparator();
+
+        juce::PopupMenu expMenu;
+
+        // PCM Card
+        {
+            juce::String label { "Load PCM Card..." };
+            const auto& cardPath = mProcessor.getCardRomPath();
+            if (!cardPath.empty())
+                label << "  (" << juce::File(cardPath).getFileName() << ")";
+            expMenu.addItem(100, label);
+        }
+
+        expMenu.addSeparator();
+
+        // Expansion Board
+        {
+            juce::String label { "Load Expansion Board..." };
+            const auto& expPath = mProcessor.getExpRomPath();
+            if (!expPath.empty())
+                label << "  (" << juce::File(expPath).getFileName() << ")";
+            expMenu.addItem(102, label);
+        }
+
+        menu.addSubMenu("Expansion", expMenu);
+    }
+
+    auto* self = this;
+
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(screenZone),
-        [processor, names](int chosen)
+        [self, processor, names](int chosen)
         {
             if (chosen == 0)
-                return;  // dismissed without selection
+                return;
 
             if (chosen == 1)
             {
                 processor->switchRomset({});
+                return;
             }
-            else
+
+            // Expansion menu items (100=PCM card, 102=expansion board)
+            if (chosen == 100)
             {
-                const size_t idx = static_cast<size_t>(chosen - 2);
-                if (idx < names.size())
-                    processor->switchRomset(names[idx]);
+                self->launchExpFileChooser(false);  // PCM card
+                return;
             }
+            if (chosen == 102)
+            {
+                self->launchExpFileChooser(true);  // Expansion board
+                return;
+            }
+
+            // Romset items (2+)
+            const size_t idx = static_cast<size_t>(chosen - 2);
+            if (idx < names.size())
+                processor->switchRomset(names[idx]);
+        });
+}
+
+void NukedSC55AudioProcessorEditor::launchExpFileChooser(bool isExpansionBoard)
+{
+    // Start in the ROM directory if available, otherwise home
+    auto startDir = mProcessor.getRomDirectory();
+    if (startDir.empty())
+        startDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString();
+
+    mExpFileChooser = std::make_shared<juce::FileChooser>(
+        isExpansionBoard ? "Select Expansion Board ROM" : "Select PCM Card ROM",
+        juce::File(startDir),
+        "*.bin");
+
+    auto* processor = &mProcessor;
+    auto chooser = mExpFileChooser;
+
+    mExpFileChooser->launchAsync(juce::FileBrowserComponent::openMode |
+                                  juce::FileBrowserComponent::canSelectFiles,
+        [processor, isExpansionBoard, chooser](const juce::FileChooser& fc)
+        {
+            const auto result = fc.getResult();
+            if (result == juce::File{})
+                return;
+
+            const auto path = result.getFullPathName().toStdString();
+            if (isExpansionBoard)
+                processor->loadExpRom(path);
+            else
+                processor->loadCardRom(path);
         });
 }
 

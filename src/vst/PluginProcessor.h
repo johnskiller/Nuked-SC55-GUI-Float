@@ -93,6 +93,24 @@ public:
     /// Pass empty string for auto-detect.
     void switchRomset(const std::string& romsetName);
 
+    /// Load a PCM card ROM file. Triggers full ROM reload.
+    void loadCardRom(const std::string& path);
+
+    /// Load an expansion board ROM file. Triggers full ROM reload.
+    void loadExpRom(const std::string& path);
+
+    /// Eject the PCM card ROM. Triggers full ROM reload.
+    void ejectCardRom();
+
+    /// Eject the expansion board ROM. Triggers full ROM reload.
+    void ejectExpRom();
+
+    /// Get the current PCM card ROM path (empty = none).
+    const std::string& getCardRomPath() const { return mCardRomPath; }
+
+    /// Get the current expansion board ROM path (empty = none).
+    const std::string& getExpRomPath() const { return mExpRomPath; }
+
     // Trigger resets via MIDI SysEx
     void triggerGsReset();
     void triggerGmReset();
@@ -121,6 +139,8 @@ private:
     //==============================================================================
     std::string                mRomDirectory;
     std::string                mDesiredRomset;  // empty = auto-detect; otherwise e.g. "mk2", "jv880", "mk1"
+    std::string                mCardRomPath;    // PCM card ROM file path (empty = none)
+    std::string                mExpRomPath;     // Expansion board ROM file path (empty = none)
     std::vector<std::string>   mSearchedPaths;
     AllRomsetInfo              mRomsetInfo;
     common::LoadRomsetResult   mLoadResult;
