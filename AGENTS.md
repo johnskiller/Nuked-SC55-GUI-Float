@@ -33,8 +33,15 @@ configured — that is fine. If SDL2 is missing, the VST target still builds.
 ### Build the plugin
 
 ```bash
-cmake --build build --target nuked-sc55-vst --config Release -j
+cmake --build build --target nuked-sc55-plugins --config Release -j
 ```
+
+> **Important:** Always use the `nuked-sc55-plugins` target, **not**
+> `nuked-sc55-vst`. The latter only builds the JUCE SharedCode static library
+> and will *not* relink or reinstall the actual `.vst3` / `.component` bundles.
+> `nuked-sc55-plugins` is an umbrella target that depends on both
+> `nuked-sc55-vst_VST3` and `nuked-sc55-vst_AU`, so a single command produces
+> and installs the final plugin bundles.
 
 Build artifacts land under:
 
@@ -46,7 +53,7 @@ build/nuked-sc55-vst_artefacts/Release/AU/Nuked SC-55.component
 ### Incremental rebuild after source edits
 
 ```bash
-cmake --build build --target nuked-sc55-vst --config Release -j
+cmake --build build --target nuked-sc55-plugins --config Release -j
 ```
 
 CMake will only recompile changed translation units (`PluginProcessor.cpp`,
@@ -154,7 +161,7 @@ git clone git@github.com:juce-framework/JUCE.git external/JUCE
 
 # Configure + build + auto-install
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DNUKED_ENABLE_VST=ON
-cmake --build build --target nuked-sc55-vst --config Release -j
+cmake --build build --target nuked-sc55-plugins --config Release -j
 
 # Verify install
 ls ~/Library/Audio/Plug-Ins/VST3/ | grep -i nuked

@@ -68,6 +68,22 @@ if(NUKED_ENABLE_VST)
 
     # Ensure backend and common headers are findable
     target_include_directories(nuked-sc55-vst PRIVATE "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src")
+
+    #---------------------------------------------------------------------------
+    # Convenience target: build + install the actual plugin bundles.
+    #
+    # juce_add_plugin creates "nuked-sc55-vst" as the SharedCode static library
+    # only. The real VST3/AU binaries are separate JUCE-generated targets
+    # (nuked-sc55-vst_VST3, nuked-sc55-vst_AU). Building --target nuked-sc55-vst
+    # alone never relinks or reinstalls the plugin bundles. This umbrella target
+    # depends on both format targets so a single command produces and installs
+    # the final .vst3 / .component bundles (COPY_PLUGIN_AFTER_BUILD handles the
+    # install step).
+    #---------------------------------------------------------------------------
+    add_custom_target(nuked-sc55-plugins
+        DEPENDS nuked-sc55-vst_VST3 nuked-sc55-vst_AU
+        COMMENT "Building and installing VST3 + AU plugin bundles"
+    )
 endif()
 
 #==============================================================================
