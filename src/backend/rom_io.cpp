@@ -556,7 +556,7 @@ bool DetectRomsetsByHash(const std::filesystem::path& base_path,
                     if (IsWaverom(known.location))
                     {
                         rom_data.resize(buffer.size());
-                        unscramble(rom_data.data(), buffer.data(), (int)buffer.size());
+                        unscramble(buffer.data(), rom_data.data(), (int)buffer.size());
                     }
                     else
                     {
