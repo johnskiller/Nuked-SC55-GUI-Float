@@ -6,6 +6,13 @@ build, see [`documentation/BUILDING.md`](documentation/BUILDING.md). For the
 plugin architecture and design rationale, see
 [`documentation/VST-PORT.md`](documentation/VST-PORT.md).
 
+## Upstream PRs
+
+| PR | Repo | Branch | Status | Description |
+|----|------|--------|--------|-------------|
+| [#73](https://github.com/linoshkmalayil/Nuked-SC55-GUI-Float/pull/73) | linoshkmalayil/Nuked-SC55-GUI-Float | `fix/rom-loading-bugs` | **OPEN** — waiting for maintainer test & merge | Fix waverom corruption causing silent notes in JV-880 mode (two ROM loading bugs) |
+| – | jcmoyer/Nuked-SC55 | – | Not needed | Bugs not present in this repo — they were introduced in GUI-Float fork |
+
 ## Prerequisites
 
 - **CMake** ≥ 3.22
